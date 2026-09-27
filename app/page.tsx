@@ -192,43 +192,54 @@ export default function Home() {
   const [badgeHorizonDays, setBadgeHorizonDays] =
     useState(7);
 
-  useEffect(() => {
-    if (!user) {
-      return;
-    }
+    useEffect(() => {
+      if (!user) {
+        return;
+      }
 
-    const uid = user.uid;
+      const uid = user.uid;
 
-    async function loadBadgePreference() {
-      try {
-        const snapshot =
-          await getDoc(
-            doc(db, "users", uid)
-          );
+      async function loadUserPreferences() {
+        try {
+          const snapshot =
+            await getDoc(
+              doc(db, "users", uid)
+            );
 
-        const configuredDays =
-          snapshot.data()
-            ?.badgeHorizonDays;
+          const data = snapshot.data();
 
-        if (
-          Number.isInteger(configuredDays) &&
-          configuredDays >= 0 &&
-          configuredDays <= 365
-        ) {
-          setBadgeHorizonDays(
-            configuredDays
+          const configuredDays =
+            data?.badgeHorizonDays;
+
+          if (
+            Number.isInteger(configuredDays) &&
+            configuredDays >= 0 &&
+            configuredDays <= 365
+          ) {
+            setBadgeHorizonDays(
+              configuredDays
+            );
+          }
+
+          const savedProfileId =
+            data?.activeProfileId;
+
+          if (
+            typeof savedProfileId === "string" &&
+            savedProfileId
+          ) {
+            setProfile(savedProfileId);
+          }
+        } catch (error) {
+          console.error(
+            "Could not load user preferences:",
+            error
           );
         }
-      } catch (error) {
-        console.error(
-          "Could not load badge preference:",
-          error
-        );
       }
-    }
 
-    loadBadgePreference();
-  }, [user]);
+      loadUserPreferences();
+    }, [user]);
 
   useEffect(
     () =>
@@ -270,11 +281,13 @@ export default function Home() {
         unsub = watchProfiles(user.uid, (p) => {
           setProfiles(p);
 
-          setProfile((cur) =>
-            p.some((x) => x.id === cur)
-              ? cur
-              : p[0]?.id ?? null
-          );
+          setProfile((cur) => {
+            if (p.some((x) => x.id === cur)) {
+              return cur;
+            }
+
+            return p[0]?.id ?? null;
+          });
         });
       });
 
@@ -759,6 +772,17 @@ export default function Home() {
         );
 
       setProfile(id);
+
+      await setDoc(
+        doc(db, "users", user.uid),
+        {
+          activeProfileId: id,
+        },
+        {
+          merge: true,
+        }
+      );
+
       setProfileModal(false);
     } finally {
       setSaving(false);
@@ -1157,9 +1181,19 @@ export default function Home() {
                   <button
                     type="button"
                     className="profile-select"
-                    onClick={() =>
-                      setProfile(p.id)
-                    }
+                    onClick={() => {
+                      setProfile(p.id);
+
+                      setDoc(
+                        doc(db, "users", user.uid),
+                        {
+                          activeProfileId: p.id,
+                        },
+                        {
+                          merge: true,
+                        }
+                      ).catch(console.error);
+                    }}
                   >
                     <span>
                       {p.initials}

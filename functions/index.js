@@ -251,6 +251,80 @@ async function getBadgeCount(
   return count;
 }
 
+async function getUserBadgeState(uid) {
+  const db = getDb();
+
+  const userSnapshot = await db
+    .collection("users")
+    .doc(uid)
+    .get();
+
+  const userData = userSnapshot.data() || {};
+
+  const configuredDays =
+    userData.badgeHorizonDays;
+
+  const badgeHorizonDays =
+    Number.isInteger(configuredDays) &&
+    configuredDays >= 0 &&
+    configuredDays <= 365
+      ? configuredDays
+      : 7;
+
+  const activeProfileId =
+    typeof userData.activeProfileId === "string"
+      ? userData.activeProfileId
+      : null;
+
+  if (!activeProfileId) {
+    return {
+      activeProfileId: null,
+      badgeHorizonDays,
+      badgeCount: 0,
+    };
+  }
+
+  const profile = await db
+    .collection("profiles")
+    .doc(activeProfileId)
+    .get();
+
+  if (!profile.exists) {
+    return {
+      activeProfileId: null,
+      badgeHorizonDays,
+      badgeCount: 0,
+    };
+  }
+
+  const profileData = profile.data();
+
+  const memberUids =
+    Array.isArray(profileData.memberUids)
+      ? profileData.memberUids
+      : [profileData.ownerUid];
+
+  if (!memberUids.includes(uid)) {
+    return {
+      activeProfileId: null,
+      badgeHorizonDays,
+      badgeCount: 0,
+    };
+  }
+
+  const badgeCount =
+    await getBadgeCount(
+      profile,
+      badgeHorizonDays
+    );
+
+  return {
+    activeProfileId,
+    badgeHorizonDays,
+    badgeCount,
+  };
+}
+
 /*
  * -------------------------------------------------------
  * Send one payment reminder
@@ -292,38 +366,6 @@ async function sendReminder({
   if (!recipients.length) {
     return 0;
   }
-
-  const recipientUid =
-    recipients[0]?.uid;
-
-  let badgeHorizonDays = 7;
-
-  if (recipientUid) {
-    const userSnapshot =
-      await getDb()
-        .collection("users")
-        .doc(recipientUid)
-        .get();
-
-    const configuredDays =
-      userSnapshot.data()
-        ?.badgeHorizonDays;
-
-    if (
-      Number.isInteger(configuredDays) &&
-      configuredDays >= 0 &&
-      configuredDays <= 365
-    ) {
-      badgeHorizonDays =
-        configuredDays;
-    }
-  }
-
-  const badgeCount =
-    await getBadgeCount(
-      profile,
-      badgeHorizonDays
-    );
 
   /*
    * Claim before sending so a retry does not
@@ -380,12 +422,33 @@ async function sendReminder({
       }.`;
   }
 
-  try {
+try {
+  let successCount = 0;
+
+  const recipientsByUid = new Map();
+
+  for (const recipient of recipients) {
+    const current =
+      recipientsByUid.get(recipient.uid) || [];
+
+    current.push(recipient);
+    recipientsByUid.set(
+      recipient.uid,
+      current
+    );
+  }
+
+  for (
+    const [uid, userRecipients]
+    of recipientsByUid.entries()
+  ) {
+    const badgeState =
+      await getUserBadgeState(uid);
+
     const response =
       await messaging.sendEachForMulticast({
-        tokens: recipients.map(
-          (recipient) =>
-            recipient.token
+        tokens: userRecipients.map(
+          (recipient) => recipient.token
         ),
 
         notification: {
@@ -399,13 +462,10 @@ async function sendReminder({
           tag: key,
           url: "/",
           badgeCount:
-            String(badgeCount),
-          profileId:
-            profile.id,
-          obligationId:
-            obligation.id,
-          occurrenceId:
-            occurrence.id,
+            String(badgeState.badgeCount),
+          profileId: profile.id,
+          obligationId: obligation.id,
+          occurrenceId: occurrence.id,
         },
 
         webpush: {
@@ -414,7 +474,8 @@ async function sendReminder({
           },
 
           notification: {
-            icon: "https://billtrack.casa/icons/icon-192.png",
+            icon:
+              "https://billtrack.casa/icons/icon-192.png",
             badge:
               "https://billtrack.casa/icons/icon-192.png",
             tag: key,
@@ -424,10 +485,14 @@ async function sendReminder({
 
     await cleanInvalidTokens(
       response,
-      recipients
+      userRecipients
     );
 
-    return response.successCount;
+    successCount +=
+      response.successCount;
+  }
+
+  return successCount;
   } catch (error) {
     logger.error(
       "Failed to send BillTrack reminder",
@@ -444,6 +509,91 @@ async function sendReminder({
 
     throw error;
   }
+}
+
+async function refreshUserBadges() {
+  const db = getDb();
+  const messaging = getMessaging();
+
+  const users =
+    await db.collection("users").get();
+
+  let refreshedUsers = 0;
+  let successfulPushes = 0;
+
+  for (const user of users.docs) {
+    const recipients =
+      await tokensForUsers([user.id]);
+
+    if (!recipients.length) {
+      continue;
+    }
+
+    const badgeState =
+      await getUserBadgeState(user.id);
+
+    const title = "BillTrack";
+    const body =
+      badgeState.badgeCount > 0
+        ? `${badgeState.badgeCount} payment${
+            badgeState.badgeCount === 1
+              ? ""
+              : "s"
+          } need your attention.`
+        : "No payments need your attention.";
+
+    const response =
+      await messaging.sendEachForMulticast({
+        tokens: recipients.map(
+          (recipient) => recipient.token
+        ),
+
+        notification: {
+          title,
+          body,
+        },
+
+        data: {
+          title,
+          body,
+          tag: `billtrack-badge-${user.id}`,
+          url: "/",
+          badgeCount:
+            String(badgeState.badgeCount),
+          badgeRefresh: "true",
+          activeProfileId:
+            badgeState.activeProfileId || "",
+        },
+
+        webpush: {
+          fcmOptions: {
+            link: "https://billtrack.casa/",
+          },
+
+          notification: {
+            icon:
+              "https://billtrack.casa/icons/icon-192.png",
+            badge:
+              "https://billtrack.casa/icons/icon-192.png",
+            tag: `billtrack-badge-${user.id}`,
+          },
+        },
+      });
+
+    await cleanInvalidTokens(
+      response,
+      recipients
+    );
+
+    refreshedUsers += 1;
+    successfulPushes +=
+      response.successCount;
+  }
+
+  return {
+    refreshedUsers,
+    successfulPushes,
+  };
 }
 
 /*
@@ -463,7 +613,7 @@ async function sendReminder({
 exports.sendBillTrackReminders =
   onSchedule(
     {
-      schedule: "0 9 * * *",
+      schedule: "0 5 * * *",
       timeZone:
         "America/Toronto",
       retryCount: 1,
@@ -619,6 +769,9 @@ exports.sendBillTrackReminders =
         }
       }
 
+const badgeRefresh =
+  await refreshUserBadges();
+
       logger.info(
         "BillTrack reminder scan complete",
         {
@@ -626,6 +779,10 @@ exports.sendBillTrackReminders =
           checkedProfiles,
           checkedObligations,
           sent,
+          badgeRefreshedUsers:
+            badgeRefresh.refreshedUsers,
+          badgeRefreshPushes:
+            badgeRefresh.successfulPushes,
         }
       );
 
