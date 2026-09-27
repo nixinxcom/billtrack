@@ -9,6 +9,7 @@ import {
   serverTimestamp,
   setDoc,
   where,
+  writeBatch,
 } from "firebase/firestore";
 import { db } from "./firebase";
 
@@ -130,4 +131,33 @@ export async function migrateLocalData(uid: string) {
   }
 
   localStorage.setItem(marker, "1");
+}
+
+export async function deleteProfileWithCommitments(
+  profileId: string
+) {
+  const obligationsRef = collection(
+    db,
+    "profiles",
+    profileId,
+    "obligations"
+  );
+
+  const obligationsSnapshot = await getDocs(
+    obligationsRef
+  );
+
+  const batch = writeBatch(db);
+
+  obligationsSnapshot.forEach(
+    (obligationDoc) => {
+      batch.delete(obligationDoc.ref);
+    }
+  );
+
+  batch.delete(
+    doc(db, "profiles", profileId)
+  );
+
+  await batch.commit();
 }

@@ -6,6 +6,7 @@ import { loginWithGoogle, logout, watchAuth } from "@/lib/auth";
 import {
   createObligation,
   createProfile,
+  deleteProfileWithCommitments,
   migrateLocalData,
   removeObligation,
   watchObligations,
@@ -51,6 +52,12 @@ export default function Home() {
   const [profileModal, setProfileModal] = useState(false);
   const [saving, setSaving] = useState(false);
 
+  const [profileToDelete, setProfileToDelete] =
+  useState<Profile | null>(null);
+
+  const [deletingProfile, setDeletingProfile] =
+    useState(false);
+    
   useEffect(() => {
     const unsubscribe = watchAuth((firebaseUser) => {
       setUser(firebaseUser);
@@ -156,6 +163,37 @@ export default function Home() {
     catch (error) { console.error("Unable to delete commitment:", error); setDataError("BillTrack could not delete this commitment."); }
   }
 
+  async function handleDeleteProfile() {
+    if (!profileToDelete) return;
+
+    try {
+      setDeletingProfile(true);
+      setDataError("");
+
+      await deleteProfileWithCommitments(
+        profileToDelete.id
+      );
+
+      if (profile === profileToDelete.id) {
+        setProfile(null);
+        setItems([]);
+      }
+
+      setProfileToDelete(null);
+    } catch (error) {
+      console.error(
+        "Unable to delete profile:",
+        error
+      );
+
+      setDataError(
+        "BillTrack could not delete this profile. Please try again."
+      );
+    } finally {
+      setDeletingProfile(false);
+    }
+  }
+
   if (!authReady) return <main className="app-shell"><header className="topbar"><div className="brand"><div className="brandmark">✓</div><div><h1>BillTrack</h1><span>Stay ahead of what&apos;s due.</span></div></div></header><section className="hero"><div><p className="eyebrow">BILLTRACK</p><h2>Loading your<br />payment calendar.</h2></div></section></main>;
 
   if (!user) return (
@@ -178,7 +216,45 @@ export default function Home() {
         {dataError && <div className="data-error">{dataError}</div>}
         <div className="section-head"><div><p className="eyebrow">PROFILES</p><h3>Whose commitments are you managing?</h3></div></div>
         <div className="profiles">
-          {profiles.map((p) => <button key={p.id} className={`profile ${profile === p.id ? "active" : ""}`} onClick={() => setProfile(p.id)}><span>{p.initials}</span><b>{p.name}</b><small>{profile === p.id ? `${items.length} commitments` : "Open profile"}</small></button>)}
+          {profiles.map((p) => (
+            <div
+              key={p.id}
+              className={`profile profile-card ${
+                profile === p.id ? "active" : ""
+              }`}
+            >
+              <button
+                type="button"
+                className="profile-select"
+                onClick={() => setProfile(p.id)}
+              >
+                <span>{p.initials}</span>
+
+                <b>{p.name}</b>
+
+                <small>
+                  {profile === p.id
+                    ? `${items.length} commitments`
+                    : "Open profile"}
+                </small>
+              </button>
+
+              {p.ownerUid === user.uid && (
+                <button
+                  type="button"
+                  className="profile-menu"
+                  title={`Delete ${p.name}`}
+                  aria-label={`Delete ${p.name}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setProfileToDelete(p);
+                  }}
+                >
+                  ⋯
+                </button>
+              )}
+            </div>
+          ))}
           <button className="profile add-profile" onClick={() => setProfileModal(true)}><span>＋</span><b>Add profile</b><small>{profiles.length === 0 ? "Create your first profile" : "Add another person"}</small></button>
         </div>
 
@@ -200,6 +276,72 @@ export default function Home() {
       </form></div></div>}
 
       {profileModal && <div className="backdrop" onMouseDown={() => setProfileModal(false)}><div className="modal small" onMouseDown={(e) => e.stopPropagation()}><button className="close" onClick={() => setProfileModal(false)}>×</button><p className="eyebrow">NEW PROFILE</p><h3>Whose commitments will this profile track?</h3><form onSubmit={addProfile}><label>Name<input name="name" placeholder="e.g. Alain" autoFocus required /></label><button className="primary full" disabled={saving}>{saving ? "Saving..." : "Add profile"}</button></form></div></div>}
+      {profileToDelete && (
+        <div
+          className="backdrop"
+          onMouseDown={() => {
+            if (!deletingProfile) {
+              setProfileToDelete(null);
+            }
+          }}
+        >
+          <div
+            className="modal small"
+            onMouseDown={(e) =>
+              e.stopPropagation()
+            }
+          >
+            <button
+              className="close"
+              type="button"
+              disabled={deletingProfile}
+              onClick={() =>
+                setProfileToDelete(null)
+              }
+            >
+              ×
+            </button>
+
+            <p className="eyebrow">
+              DELETE PROFILE
+            </p>
+
+            <h3>
+              Delete {profileToDelete.name}?
+            </h3>
+
+            <p className="delete-warning">
+              This will permanently delete this
+              profile and all of its commitments.
+              This action cannot be undone.
+            </p>
+
+            <div className="delete-actions">
+              <button
+                type="button"
+                className="ghost"
+                disabled={deletingProfile}
+                onClick={() =>
+                  setProfileToDelete(null)
+                }
+              >
+                Cancel
+              </button>
+
+              <button
+                type="button"
+                className="danger-button"
+                disabled={deletingProfile}
+                onClick={handleDeleteProfile}
+              >
+                {deletingProfile
+                  ? "Deleting..."
+                  : "Delete profile"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
