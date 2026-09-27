@@ -189,7 +189,7 @@ export default function Home() {
         <p className="privacy">● Synced with Firestore · Each profile has its own commitments · No bank connection</p>
       </section>
 
-      {modal && activeProfile && <div className="backdrop" onMouseDown={() => setModal(false)}><div className="modal" onMouseDown={(e) => e.stopPropagation()}><button className="close" onClick={() => setModal(false)}>×</button><p className="eyebrow">NEW COMMITMENT · {activeProfile.name.toUpperCase()}</p><h3>Add something {activeProfile.name} doesn&apos;t want to forget</h3><form onSubmit={addItem}>
+      {modal && activeProfile && <div className="backdrop" onMouseDown={() => setModal(false)}><div className="modal" onMouseDown={(e) => e.stopPropagation()}><button className="close" onClick={() => setModal(false)}>×</button><p className="eyebrow">NEW COMMITMENT · {activeProfile.name.toUpperCase()}</p><h3>Add a commitment</h3><form onSubmit={addItem}>
         <label>Name<input name="title" placeholder="e.g. RBC Visa" required /></label>
         <label>Type<select name="type"><option>Credit Card</option><option>Insurance</option><option>Rent</option><option>Utility</option><option>Subscription</option><option>Other</option></select></label>
         <div className="grid2"><label>Payment due day<input name="dueDay" type="number" min="1" max="31" placeholder="28" required /></label><label>Statement day (optional)<input name="statementDay" type="number" min="1" max="31" placeholder="7" /></label></div>

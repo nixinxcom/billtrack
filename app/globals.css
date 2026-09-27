@@ -3,3 +3,97 @@
 .account-actions{display:flex;align-items:center;gap:12px}@media(max-width:600px){.account-actions{gap:7px}.account-actions .ghost{padding:10px 11px;font-size:12px}}
 
 .data-error{max-width:1230px;margin:0 auto 24px;padding:12px 15px;border:1px solid #e6b9b5;border-radius:10px;background:#fff3f1;color:#8f3731;font-size:13px}.reminders{border:1px solid #dfe1dc;border-radius:12px;padding:14px;margin:2px 0 0}.reminders legend{font-size:11px;font-weight:800;color:#626b65;padding:0 6px}.reminders>p{font-size:11px;color:var(--muted);margin:0 0 12px}.reminder-options{display:grid;grid-template-columns:1fr 1fr;gap:9px}.modal .reminder-options label{display:flex;align-items:center;gap:8px;padding:9px 10px;background:#fafaf7;border-radius:9px;font-weight:600}.modal .reminder-options input{display:inline-block;width:auto;margin:0;accent-color:var(--ink)}button:disabled{opacity:.6;cursor:not-allowed}@media(max-width:600px){.reminder-options{grid-template-columns:1fr}}
+
+/* -------------------------------------------------------
+   Mobile modal / iOS Safari fixes
+------------------------------------------------------- */
+
+.backdrop {
+  overflow-y: auto;
+  overflow-x: hidden;
+  align-items: start;
+  justify-items: center;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+
+.modal {
+  width: min(560px, calc(100vw - 40px));
+  max-width: 100%;
+  max-height: none;
+  margin: max(20px, env(safe-area-inset-top)) auto
+    max(20px, env(safe-area-inset-bottom));
+  overflow: visible;
+  box-sizing: border-box;
+}
+
+.modal.small {
+  width: min(420px, calc(100vw - 40px));
+}
+
+.modal,
+.modal form,
+.modal label,
+.modal fieldset,
+.modal .grid2,
+.modal .reminder-options {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.modal input,
+.modal select,
+.modal textarea,
+.modal button {
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.modal h3 {
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 600px) {
+  .backdrop {
+    display: block;
+    padding:
+      max(12px, env(safe-area-inset-top))
+      12px
+      max(12px, env(safe-area-inset-bottom));
+  }
+
+  .modal,
+  .modal.small {
+    width: 100%;
+    max-width: 100%;
+    margin: 0 auto;
+    padding: 24px 18px 28px;
+    border-radius: 18px;
+  }
+
+  .modal h3 {
+    font-size: 27px;
+    line-height: 1.08;
+    padding-right: 36px;
+  }
+
+  .modal form {
+    width: 100%;
+  }
+
+  .grid2 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .reminder-options {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .close {
+    position: sticky;
+    float: right;
+    top: 8px;
+    right: 0;
+    z-index: 2;
+  }
+}
