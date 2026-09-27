@@ -267,6 +267,16 @@
     align-self: start;
     justify-self: end;
 
-    transform: translateY(42px);
+    transform: none;
+
+    display: flex;
+    gap: 2px;
+    margin-top: 2px;
+  }
+
+  .bill-action {
+    width: 30px;
+    height: 30px;
+    font-size: 17px;
   }
 }
