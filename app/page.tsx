@@ -269,6 +269,59 @@ export default function Home() {
     );
   }, [profile, items]);
 
+  useEffect(() => {
+    if (typeof navigator === "undefined") {
+      return;
+    }
+
+    const badgeNavigator = navigator as Navigator & {
+      setAppBadge?: (count?: number) => Promise<void>;
+      clearAppBadge?: () => Promise<void>;
+    };
+
+    const today = todayIso();
+
+    const horizonDate = new Date(
+      `${today}T12:00:00`
+    );
+
+    horizonDate.setDate(
+      horizonDate.getDate() + 7
+    );
+
+    const horizon =
+      `${horizonDate.getFullYear()}-` +
+      `${String(
+        horizonDate.getMonth() + 1
+      ).padStart(2, "0")}-` +
+      `${String(
+        horizonDate.getDate()
+      ).padStart(2, "0")}`;
+
+    const badgeCount =
+      occurrences.filter(
+        (o) =>
+          !o.paid &&
+          o.dueDate <= horizon
+      ).length;
+
+    if (
+      badgeCount > 0 &&
+      badgeNavigator.setAppBadge
+    ) {
+      badgeNavigator
+        .setAppBadge(badgeCount)
+        .catch(console.error);
+    } else if (
+      badgeCount === 0 &&
+      badgeNavigator.clearAppBadge
+    ) {
+      badgeNavigator
+        .clearAppBadge()
+        .catch(console.error);
+    }
+  }, [occurrences]);
+
   const activeProfile =
     profiles.find((p) => p.id === profile) ?? null;
 

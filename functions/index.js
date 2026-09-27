@@ -199,6 +199,46 @@ async function cleanInvalidTokens(
 
 /*
  * -------------------------------------------------------
+ * App badge count
+ *
+ * Counts every unpaid occurrence that is already overdue
+ * or is due between today and the next 7 days.
+ * -------------------------------------------------------
+ */
+
+async function getBadgeCount(profile) {
+  const today = torontoToday();
+  const horizon = addDays(today, 7);
+
+  const obligations = await profile.ref
+    .collection("obligations")
+    .get();
+
+  let count = 0;
+
+  for (const obligation of obligations.docs) {
+    const occurrences = await obligation.ref
+      .collection("occurrences")
+      .where("paid", "==", false)
+      .get();
+
+    for (const occurrence of occurrences.docs) {
+      const data = occurrence.data();
+
+      if (
+        typeof data.dueDate === "string" &&
+        data.dueDate <= horizon
+      ) {
+        count += 1;
+      }
+    }
+  }
+
+  return count;
+}
+
+/*
+ * -------------------------------------------------------
  * Send one payment reminder
  * -------------------------------------------------------
  */
@@ -238,6 +278,9 @@ async function sendReminder({
   if (!recipients.length) {
     return 0;
   }
+
+  const badgeCount =
+    await getBadgeCount(profile);
 
   /*
    * Claim before sending so a retry does not
@@ -312,6 +355,8 @@ async function sendReminder({
           body,
           tag: key,
           url: "/",
+          badgeCount:
+            String(badgeCount),
           profileId:
             profile.id,
           obligationId:

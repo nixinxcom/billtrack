@@ -26,19 +26,73 @@ self.addEventListener("fetch", (event) => {
 
 self.addEventListener("push", (event) => {
   let payload = {};
-  try { payload = event.data ? event.data.json() : {}; } catch { payload = { data: { body: event.data ? event.data.text() : "" } }; }
-  const notification = payload.notification || {};
-  const data = payload.data || {};
-  const title = notification.title || data.title || "BillTrack";
+
+  try {
+    payload = event.data
+      ? event.data.json()
+      : {};
+  } catch {
+    payload = {
+      data: {
+        body: event.data
+          ? event.data.text()
+          : ""
+      }
+    };
+  }
+
+  const notification =
+    payload.notification || {};
+
+  const data =
+    payload.data || {};
+
+  const title =
+    notification.title ||
+    data.title ||
+    "BillTrack";
+
+  const badgeCount =
+    Number(data.badgeCount || 0);
+
   const options = {
-    body: notification.body || data.body || "You have a payment reminder.",
+    body:
+      notification.body ||
+      data.body ||
+      "You have a payment reminder.",
+
     icon: "/icons/icon-192.png",
     badge: "/icons/icon-192.png",
-    tag: data.tag || "billtrack-reminder",
+
+    tag:
+      data.tag ||
+      "billtrack-reminder",
+
     renotify: false,
-    data: { url: data.url || "/" },
+
+    data: {
+      url: data.url || "/"
+    },
   };
-  event.waitUntil(self.registration.showNotification(title, options));
+
+  event.waitUntil(
+    Promise.all([
+      self.registration.showNotification(
+        title,
+        options
+      ),
+
+      badgeCount > 0 &&
+      "setAppBadge" in self.navigator
+        ? self.navigator.setAppBadge(
+            badgeCount
+          )
+        : badgeCount === 0 &&
+          "clearAppBadge" in self.navigator
+        ? self.navigator.clearAppBadge()
+        : Promise.resolve(),
+    ])
+  );
 });
 
 self.addEventListener("notificationclick", (event) => {
