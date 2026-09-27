@@ -4,7 +4,9 @@ const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const { setGlobalOptions } = require("firebase-functions/v2");
 const { logger } = require("firebase-functions");
-const admin = require("firebase-admin");
+const { initializeApp } = require("firebase-admin/app");
+const { getFirestore, FieldValue } = require("firebase-admin/firestore");
+const { getMessaging } = require("firebase-admin/messaging");
 
 /*
  * -------------------------------------------------------
@@ -12,7 +14,7 @@ const admin = require("firebase-admin");
  * -------------------------------------------------------
  */
 
-admin.initializeApp();
+initializeApp();
 
 setGlobalOptions({
   region: "northamerica-northeast1",
@@ -20,11 +22,7 @@ setGlobalOptions({
 });
 
 function getDb() {
-  return admin.firestore();
-}
-
-function getMessaging() {
-  return admin.messaging();
+  return getFirestore();
 }
 
 /*
@@ -146,7 +144,7 @@ async function claimNotification(
     await ref.create({
       ...data,
       createdAt:
-        admin.firestore.FieldValue.serverTimestamp(),
+        FieldValue.serverTimestamp(),
     });
 
     return true;
