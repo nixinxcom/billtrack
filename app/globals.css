@@ -357,3 +357,31 @@
     width: 100%;
   }
 }
+/* -------------------------------------------------------
+   Push notifications
+------------------------------------------------------- */
+.notification-button {
+  white-space: nowrap;
+}
+
+.notification-enabled {
+  border-color: #8bbf3d !important;
+  background: #efffd5 !important;
+  color: #20351f !important;
+}
+
+.notification-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+@media (max-width: 600px) {
+  .account-actions {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .notification-button {
+    order: 3;
+  }
+}

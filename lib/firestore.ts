@@ -264,6 +264,31 @@ export async function deleteProfileWithCommitments(profileId: string) {
   await deleteDoc(doc(db, "profiles", profileId));
 }
 
+export async function savePushToken(
+  uid: string,
+  token: string,
+  device: { userAgent: string; platform: string }
+) {
+  const bytes = new TextEncoder().encode(token);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  const tokenId = Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+
+  await setDoc(
+    doc(db, "users", uid, "pushTokens", tokenId),
+    {
+      token,
+      userAgent: device.userAgent,
+      platform: device.platform,
+      enabled: true,
+      updatedAt: serverTimestamp(),
+      createdAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+}
+
 export async function migrateLocalData(uid: string) {
   if (typeof window === "undefined") return;
   const marker = `billtrack.firestoreMigrated.${uid}`;

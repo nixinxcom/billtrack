@@ -6,6 +6,7 @@ export default function manifest(): MetadataRoute.Manifest {
     short_name: "BillTrack",
     description:
       "Stay ahead of cards, insurance, rent, utilities and recurring bills.",
+    id: "/",
     start_url: "/",
     display: "standalone",
     background_color: "#f7f7f2",

@@ -4,6 +4,14 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import type { User } from "firebase/auth";
 import { loginWithGoogle, logout, watchAuth } from "@/lib/auth";
 import {
+  enablePushNotifications,
+  listenForForegroundMessages,
+  notificationStatus,
+  refreshPushRegistration,
+  sendTestPush,
+  type NotificationStatus,
+} from "@/lib/notifications";
+import {
   addCategory,
   createObligation,
   createProfile,
@@ -171,6 +179,10 @@ export default function Home() {
   const [recurrence, setRecurrence] =
     useState<Recurrence>("monthly");
 
+  const [pushStatus, setPushStatus] =
+    useState<NotificationStatus>("prompt");
+  const [enablingPush, setEnablingPush] = useState(false);
+
   useEffect(
     () =>
       watchAuth((u) => {
@@ -179,6 +191,22 @@ export default function Home() {
       }),
     []
   );
+
+  useEffect(() => {
+    setPushStatus(notificationStatus());
+    let unsubscribe = () => {};
+    listenForForegroundMessages()
+      .then((unsub) => { unsubscribe = unsub; })
+      .catch(console.error);
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    refreshPushRegistration(user.uid).then(() => {
+      setPushStatus(notificationStatus());
+    });
+  }, [user]);
 
   useEffect(() => {
     if (!user) {
@@ -438,6 +466,27 @@ export default function Home() {
       setAuthError(
         "Google sign-in could not be completed. Please try again."
       );
+    }
+  }
+
+  async function handleEnableNotifications() {
+    if (!user) return;
+    try {
+      setEnablingPush(true);
+      setDataError("");
+      await enablePushNotifications(user.uid);
+      setPushStatus("enabled");
+      await sendTestPush();
+    } catch (error) {
+      console.error(error);
+      setPushStatus(notificationStatus());
+      setDataError(
+        error instanceof Error
+          ? error.message
+          : "BillTrack could not enable notifications."
+      );
+    } finally {
+      setEnablingPush(false);
     }
   }
 
@@ -847,6 +896,21 @@ export default function Home() {
             }
           >
             ＋ Profile
+          </button>
+
+          <button
+            className={`ghost notification-button ${pushStatus === "enabled" ? "notification-enabled" : ""}`}
+            onClick={handleEnableNotifications}
+            disabled={enablingPush || pushStatus === "unsupported"}
+            title={
+              pushStatus === "enabled"
+                ? "Payment notifications are enabled"
+                : pushStatus === "denied"
+                ? "Notifications are blocked in browser settings"
+                : "Enable payment notifications"
+            }
+          >
+            {pushStatus === "enabled" ? "🔔 Notifications on" : enablingPush ? "Enabling…" : "🔔 Enable notifications"}
           </button>
 
           <button
