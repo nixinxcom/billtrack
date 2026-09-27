@@ -2,6 +2,12 @@
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import type { User } from "firebase/auth";
+import {
+  doc,
+  getDoc,
+  setDoc,
+} from "firebase/firestore";
+import { db } from "@/lib/firebase";
 import { loginWithGoogle, logout, watchAuth } from "@/lib/auth";
 import {
   enablePushNotifications,
@@ -183,6 +189,47 @@ export default function Home() {
     useState<NotificationStatus>("prompt");
   const [enablingPush, setEnablingPush] = useState(false);
 
+  const [badgeHorizonDays, setBadgeHorizonDays] =
+    useState(7);
+
+  useEffect(() => {
+    if (!user) {
+      return;
+    }
+
+    const uid = user.uid;
+
+    async function loadBadgePreference() {
+      try {
+        const snapshot =
+          await getDoc(
+            doc(db, "users", uid)
+          );
+
+        const configuredDays =
+          snapshot.data()
+            ?.badgeHorizonDays;
+
+        if (
+          Number.isInteger(configuredDays) &&
+          configuredDays >= 0 &&
+          configuredDays <= 365
+        ) {
+          setBadgeHorizonDays(
+            configuredDays
+          );
+        }
+      } catch (error) {
+        console.error(
+          "Could not load badge preference:",
+          error
+        );
+      }
+    }
+
+    loadBadgePreference();
+  }, [user]);
+
   useEffect(
     () =>
       watchAuth((u) => {
@@ -286,7 +333,8 @@ export default function Home() {
     );
 
     horizonDate.setDate(
-      horizonDate.getDate() + 7
+      horizonDate.getDate() +
+        badgeHorizonDays
     );
 
     const horizon =
@@ -320,20 +368,11 @@ export default function Home() {
         .clearAppBadge()
         .catch(console.error);
     }
-  }, [occurrences]);
+  }, [
+    occurrences,
+    badgeHorizonDays,
+  ]);
 
-  useEffect(() => {
-    const badgeNavigator = navigator as Navigator & {
-      setAppBadge?: (count?: number) => Promise<void>;
-    };
-
-    if (badgeNavigator.setAppBadge) {
-      badgeNavigator
-        .setAppBadge(7)
-        .catch(console.error);
-    }
-  }, []);
-    
   const activeProfile =
     profiles.find((p) => p.id === profile) ?? null;
 
@@ -977,6 +1016,53 @@ export default function Home() {
           >
             {pushStatus === "enabled" ? "🔔 Notifications on" : enablingPush ? "Enabling…" : "🔔 Enable notifications"}
           </button>
+
+          <label
+            title="Payments due within this many days are included in the app badge"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "6px",
+            }}
+          >
+            <span>Badge</span>
+
+            <input
+              type="number"
+              min="0"
+              max="365"
+              value={badgeHorizonDays}
+              onChange={(e) => {
+                const value = Math.max(
+                  0,
+                  Math.min(
+                    365,
+                    Number(e.target.value) || 0
+                  )
+                );
+
+                setBadgeHorizonDays(value);
+
+                if (user) {
+                  setDoc(
+                    doc(db, "users", user.uid),
+                    {
+                      badgeHorizonDays: value,
+                    },
+                    {
+                      merge: true,
+                    }
+                  ).catch(console.error);
+                }
+              }}
+              aria-label="Badge planning window in days"
+              style={{
+                width: "58px",
+              }}
+            />
+
+            <span>days</span>
+          </label>
 
           <button
             className="ghost"

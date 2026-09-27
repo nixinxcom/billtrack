@@ -206,9 +206,23 @@ async function cleanInvalidTokens(
  * -------------------------------------------------------
  */
 
-async function getBadgeCount(profile) {
+async function getBadgeCount(
+  profile,
+  badgeHorizonDays = 7
+) {
   const today = torontoToday();
-  const horizon = addDays(today, 7);
+
+  const safeHorizonDays =
+    Number.isInteger(badgeHorizonDays) &&
+    badgeHorizonDays >= 0 &&
+    badgeHorizonDays <= 365
+      ? badgeHorizonDays
+      : 7;
+
+  const horizon = addDays(
+    today,
+    safeHorizonDays
+  );
 
   const obligations = await profile.ref
     .collection("obligations")
@@ -279,8 +293,37 @@ async function sendReminder({
     return 0;
   }
 
+  const recipientUid =
+    recipients[0]?.uid;
+
+  let badgeHorizonDays = 7;
+
+  if (recipientUid) {
+    const userSnapshot =
+      await getDb()
+        .collection("users")
+        .doc(recipientUid)
+        .get();
+
+    const configuredDays =
+      userSnapshot.data()
+        ?.badgeHorizonDays;
+
+    if (
+      Number.isInteger(configuredDays) &&
+      configuredDays >= 0 &&
+      configuredDays <= 365
+    ) {
+      badgeHorizonDays =
+        configuredDays;
+    }
+  }
+
   const badgeCount =
-    await getBadgeCount(profile);
+    await getBadgeCount(
+      profile,
+      badgeHorizonDays
+    );
 
   /*
    * Claim before sending so a retry does not
