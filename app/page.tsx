@@ -1,172 +1,184 @@
 "use client";
 
-import {
-  FormEvent,
-  useEffect,
-  useMemo,
-  useState,
-} from "react";
-
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import type { User } from "firebase/auth";
-
+import { loginWithGoogle, logout, watchAuth } from "@/lib/auth";
 import {
-  loginWithGoogle,
-  logout,
-  watchAuth,
-} from "@/lib/auth";
-
-import {
+  addCategory,
   createObligation,
   createProfile,
   deleteProfileWithCommitments,
+  ensureOccurrences,
+  markOccurrencePaid,
+  markOccurrenceUnpaid,
   migrateLocalData,
   removeObligation,
   updateObligation,
+  watchCategories,
   watchObligations,
+  watchOccurrences,
   watchProfiles,
-  type ItemType,
+  type Category,
   type Obligation,
+  type Occurrence,
   type Profile,
+  type Recurrence,
 } from "@/lib/firestore";
 
-function nextDate(day: number) {
-  const now = new Date();
+const todayIso = () => {
+  const d = new Date();
 
-  const d = new Date(
-    now.getFullYear(),
-    now.getMonth(),
-    Math.min(
-      day,
-      new Date(
-        now.getFullYear(),
-        now.getMonth() + 1,
-        0
-      ).getDate()
-    )
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(
+    2,
+    "0"
+  )}-${String(d.getDate()).padStart(2, "0")}`;
+};
+
+const parseDate = (s: string) => {
+  const [y, m, d] = s.split("-").map(Number);
+  return new Date(y, m - 1, d);
+};
+
+const daysBetween = (a: string, b: string) =>
+  Math.round(
+    (parseDate(b).getTime() - parseDate(a).getTime()) / 86400000
   );
 
-  d.setHours(23, 59, 59, 999);
+const formatDate = (s: string) =>
+  parseDate(s).toLocaleDateString("en-CA", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
 
-  if (d < now) {
-    d.setMonth(d.getMonth() + 1);
+const money = (n?: number) =>
+  n == null
+    ? "—"
+    : `$${n.toLocaleString(undefined, {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      })}`;
+
+function occurrenceState(o: Occurrence) {
+  const today = todayIso();
+
+  if (o.paid && o.paidDate) {
+    const delta = daysBetween(o.dueDate, o.paidDate);
+
+    if (delta < 0) {
+      return {
+        label: `Paid ${Math.abs(delta)}d early`,
+        cls: "safe",
+      };
+    }
+
+    if (delta === 0) {
+      return {
+        label: "Paid on due date",
+        cls: "safe",
+      };
+    }
+
+    return {
+      label: `Paid ${delta}d late`,
+      cls: "danger",
+    };
   }
 
-  return d;
+  const delta = daysBetween(today, o.dueDate);
+
+  if (delta < 0) {
+    return {
+      label: `Overdue ${Math.abs(delta)}d`,
+      cls: "danger",
+    };
+  }
+
+  if (delta === 0) {
+    return {
+      label: "Due today",
+      cls: "danger",
+    };
+  }
+
+  if (delta <= 3) {
+    return {
+      label: `In ${delta} days`,
+      cls: "danger",
+    };
+  }
+
+  if (delta <= 7) {
+    return {
+      label: `In ${delta} days`,
+      cls: "warn",
+    };
+  }
+
+  return {
+    label: `In ${delta} days`,
+    cls: "safe",
+  };
 }
 
-function daysUntil(day: number) {
-  const now = new Date();
-  const target = nextDate(day);
+function iconFor(type: string) {
+  const t = type.toLowerCase();
 
-  const today = new Date(
-    now.getFullYear(),
-    now.getMonth(),
-    now.getDate()
-  );
+  if (t.includes("card")) return "▣";
 
-  const end = new Date(
-    target.getFullYear(),
-    target.getMonth(),
-    target.getDate()
-  );
+  if (t.includes("mortgage") || t.includes("rent")) return "⌂";
 
-  return Math.round(
-    (end.getTime() -
-      today.getTime()) /
-      86400000
-  );
-}
+  if (t.includes("auto") || t.includes("car")) return "◇";
 
-function formatDue(day: number) {
-  return nextDate(
-    day
-  ).toLocaleDateString(
-    "en-CA",
-    {
-      month: "short",
-      day: "numeric",
-    }
-  );
-}
+  if (t.includes("utility")) return "ϟ";
 
-function iconFor(type: ItemType) {
-  return (
-    {
-      "Credit Card": "▣",
-      Insurance: "◇",
-      Rent: "⌂",
-      Utility: "ϟ",
-      Subscription: "↻",
-      Other: "•",
-    } as Record<ItemType, string>
-  )[type];
+  if (t.includes("subscription")) return "↻";
+
+  return "•";
 }
 
 export default function Home() {
-  const [user, setUser] =
-    useState<User | null>(null);
+  const [user, setUser] = useState<User | null>(null);
+  const [authReady, setAuthReady] = useState(false);
 
-  const [authReady, setAuthReady] =
-    useState(false);
+  const [authError, setAuthError] = useState("");
+  const [dataError, setDataError] = useState("");
 
-  const [authError, setAuthError] =
-    useState("");
+  const [profiles, setProfiles] = useState<Profile[]>([]);
+  const [profile, setProfile] = useState<string | null>(null);
 
-  const [dataError, setDataError] =
-    useState("");
+  const [items, setItems] = useState<Obligation[]>([]);
+  const [occurrences, setOccurrences] = useState<Occurrence[]>([]);
 
-  const [profiles, setProfiles] =
-    useState<Profile[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
 
-  const [items, setItems] =
-    useState<Obligation[]>([]);
+  const [modal, setModal] = useState(false);
+  const [profileModal, setProfileModal] = useState(false);
+  const [categoryModal, setCategoryModal] = useState(false);
 
-  const [profile, setProfile] =
-    useState<string | null>(null);
+  const [editingItem, setEditingItem] =
+    useState<Obligation | null>(null);
 
-  const [modal, setModal] =
-    useState(false);
+  const [paymentOccurrence, setPaymentOccurrence] =
+    useState<Occurrence | null>(null);
 
-  const [
-    profileModal,
-    setProfileModal,
-  ] = useState(false);
+  const [profileToDelete, setProfileToDelete] =
+    useState<Profile | null>(null);
 
-  const [saving, setSaving] =
-    useState(false);
+  const [saving, setSaving] = useState(false);
+  const [deletingProfile, setDeletingProfile] = useState(false);
 
-  const [
-    editingItem,
-    setEditingItem,
-  ] =
-    useState<Obligation | null>(
-      null
-    );
+  const [recurrence, setRecurrence] =
+    useState<Recurrence>("monthly");
 
-  const [
-    profileToDelete,
-    setProfileToDelete,
-  ] =
-    useState<Profile | null>(
-      null
-    );
-
-  const [
-    deletingProfile,
-    setDeletingProfile,
-  ] = useState(false);
-
-  useEffect(() => {
-    const unsubscribe =
-      watchAuth(
-        (firebaseUser) => {
-          setUser(firebaseUser);
-          setAuthReady(true);
-        }
-      );
-
-    return unsubscribe;
-  }, []);
+  useEffect(
+    () =>
+      watchAuth((u) => {
+        setUser(u);
+        setAuthReady(true);
+      }),
+    []
+  );
 
   useEffect(() => {
     if (!user) {
@@ -175,41 +187,23 @@ export default function Home() {
       return;
     }
 
-    let unsubscribe = () => {};
+    let unsub = () => {};
 
     migrateLocalData(user.uid)
-      .catch((error) =>
-        console.error(
-          "Local migration failed:",
-          error
-        )
-      )
+      .catch(console.error)
       .finally(() => {
-        unsubscribe =
-          watchProfiles(
-            user.uid,
-            (cloudProfiles) => {
-              setProfiles(
-                cloudProfiles
-              );
+        unsub = watchProfiles(user.uid, (p) => {
+          setProfiles(p);
 
-              setProfile(
-                (current) =>
-                  cloudProfiles.some(
-                    (p) =>
-                      p.id ===
-                      current
-                  )
-                    ? current
-                    : cloudProfiles[0]
-                        ?.id ??
-                      null
-              );
-            }
+          setProfile((cur) =>
+            p.some((x) => x.id === cur)
+              ? cur
+              : p[0]?.id ?? null
           );
+        });
       });
 
-    return () => unsubscribe();
+    return () => unsub();
   }, [user]);
 
   useEffect(() => {
@@ -218,55 +212,228 @@ export default function Home() {
       return;
     }
 
-    return watchObligations(
-      profile,
-      setItems
-    );
+    return watchObligations(profile, setItems);
   }, [profile]);
 
-  const activeProfile =
-    useMemo(
-      () =>
-        profiles.find(
-          (p) =>
-            p.id === profile
-        ) ?? null,
-      [profiles, profile]
+  useEffect(() => {
+    if (!profile) {
+      setCategories([]);
+      return;
+    }
+
+    return watchCategories(profile, setCategories);
+  }, [profile]);
+
+  useEffect(() => {
+    if (!profile || !items.length) {
+      setOccurrences([]);
+      return;
+    }
+
+    items.forEach((item) =>
+      ensureOccurrences(profile, item).catch(console.error)
     );
+
+    return watchOccurrences(
+      profile,
+      items.map((x) => x.id),
+      setOccurrences
+    );
+  }, [profile, items]);
+
+  const activeProfile =
+    profiles.find((p) => p.id === profile) ?? null;
+
+  const byObligation = useMemo(() => {
+    const map = new Map<string, Occurrence[]>();
+
+    occurrences.forEach((o) => {
+      const arr = map.get(o.obligationId) ?? [];
+      arr.push(o);
+      map.set(o.obligationId, arr);
+    });
+
+    map.forEach((arr) =>
+      arr.sort((a, b) =>
+        a.dueDate.localeCompare(b.dueDate)
+      )
+    );
+
+    return map;
+  }, [occurrences]);
+
+  const currentOccurrence = (item: Obligation) => {
+    const arr = byObligation.get(item.id) ?? [];
+
+    return (
+      arr.find(
+        (o) =>
+          !o.paid &&
+          o.dueDate < todayIso()
+      ) ??
+      arr.find(
+        (o) =>
+          !o.paid &&
+          o.dueDate >= todayIso()
+      ) ??
+      arr[arr.length - 1]
+    );
+  };
 
   const visible = useMemo(
     () =>
-      [...items].sort(
-        (a, b) =>
-          daysUntil(a.dueDay) -
-          daysUntil(b.dueDay)
+      [...items].sort((a, b) =>
+        (
+          currentOccurrence(a)?.dueDate ?? "9999"
+        ).localeCompare(
+          currentOccurrence(b)?.dueDate ?? "9999"
+        )
       ),
-    [items]
+    [items, occurrences]
   );
 
-  const urgent =
-    visible.filter(
-      (item) =>
-        daysUntil(item.dueDay) <=
-        7
+  const currentMonth = todayIso().slice(0, 7);
+
+  const monthOccurrences = occurrences.filter((o) =>
+    o.dueDate.startsWith(currentMonth)
+  );
+
+  const monthScheduled = monthOccurrences.reduce(
+    (s, o) => s + (o.expectedAmount ?? 0),
+    0
+  );
+
+  const monthPaid = monthOccurrences
+    .filter((o) => o.paid)
+    .reduce(
+      (s, o) =>
+        s +
+        (o.paidAmount ??
+          o.expectedAmount ??
+          0),
+      0
     );
 
-  const later =
-    visible.filter(
-      (item) =>
-        daysUntil(item.dueDay) >
-        7
+  const monthOverdue = monthOccurrences
+    .filter(
+      (o) =>
+        !o.paid &&
+        o.dueDate < todayIso()
+    )
+    .reduce(
+      (s, o) =>
+        s + (o.expectedAmount ?? 0),
+      0
     );
+
+  const rollingMonths = useMemo(() => {
+    const now = new Date();
+
+    return Array.from(
+      { length: 12 },
+      (_, i) => {
+        const d = new Date(
+          now.getFullYear(),
+          now.getMonth() + i,
+          1
+        );
+
+        const key = `${d.getFullYear()}-${String(
+          d.getMonth() + 1
+        ).padStart(2, "0")}`;
+
+        const monthItems =
+          occurrences.filter((o) =>
+            o.dueDate.startsWith(key)
+          );
+
+        return {
+          key,
+          month: d.toLocaleDateString(
+            "en-CA",
+            {
+              month: "short",
+            }
+          ),
+          year: d.getFullYear(),
+
+          total: monthItems.reduce(
+            (sum, o) =>
+              sum +
+              (o.expectedAmount ?? 0),
+            0
+          ),
+
+          pending: monthItems
+            .filter((o) => !o.paid)
+            .reduce(
+              (sum, o) =>
+                sum +
+                (o.expectedAmount ?? 0),
+              0
+            ),
+        };
+      }
+    );
+  }, [occurrences]);
+
+  const pastDueMonths = useMemo(() => {
+    const totals =
+      new Map<string, number>();
+
+    occurrences
+      .filter(
+        (o) =>
+          !o.paid &&
+          o.dueDate.slice(0, 7) <
+            currentMonth
+      )
+      .forEach((o) => {
+        const key =
+          o.dueDate.slice(0, 7);
+
+        totals.set(
+          key,
+          (totals.get(key) ?? 0) +
+            (o.expectedAmount ?? 0)
+        );
+      });
+
+    return [...totals.entries()]
+      .sort(([a], [b]) =>
+        a.localeCompare(b)
+      )
+      .map(([key, total]) => {
+        const [year, month] = key
+          .split("-")
+          .map(Number);
+
+        const d = new Date(
+          year,
+          month - 1,
+          1
+        );
+
+        return {
+          key,
+          total,
+          month: d.toLocaleDateString(
+            "en-CA",
+            {
+              month: "short",
+            }
+          ),
+          year,
+        };
+      });
+  }, [occurrences, currentMonth]);
 
   async function handleLogin() {
     try {
       setAuthError("");
       await loginWithGoogle();
-    } catch (error) {
-      console.error(
-        "Google login failed:",
-        error
-      );
+    } catch (e) {
+      console.error(e);
 
       setAuthError(
         "Google sign-in could not be completed. Please try again."
@@ -275,15 +442,8 @@ export default function Home() {
   }
 
   async function handleLogout() {
-    try {
-      await logout();
-      setProfile(null);
-    } catch (error) {
-      console.error(
-        "Logout failed:",
-        error
-      );
-    }
+    await logout();
+    setProfile(null);
   }
 
   function openCommitmentModal() {
@@ -293,17 +453,21 @@ export default function Home() {
     }
 
     setEditingItem(null);
+    setRecurrence("monthly");
     setModal(true);
   }
 
-  function openEditCommitmentModal(
-    item: Obligation
-  ) {
+  function openEdit(item: Obligation) {
     setEditingItem(item);
+
+    setRecurrence(
+      item.recurrence ?? "monthly"
+    );
+
     setModal(true);
   }
 
-  function closeCommitmentModal() {
+  function closeCommitment() {
     setModal(false);
     setEditingItem(null);
   }
@@ -313,57 +477,79 @@ export default function Home() {
   ) {
     e.preventDefault();
 
-    if (!activeProfile) {
-      return;
-    }
+    if (!activeProfile) return;
 
     const f =
-      new FormData(
-        e.currentTarget
-      );
+      new FormData(e.currentTarget);
 
-    const reminderDays = f
-      .getAll("reminderDays")
-      .map(Number)
-      .sort(
-        (a, b) => b - a
-      );
+    const rec = String(
+      f.get("recurrence")
+    ) as Recurrence;
 
-    const itemData = {
+    const dueDate =
+      String(f.get("dueDate") || "") ||
+      undefined;
+
+    const startDate =
+      rec === "one-time"
+        ? dueDate ?? todayIso()
+        : String(
+            f.get("startDate") ||
+              todayIso()
+          );
+
+    const data: Omit<
+      Obligation,
+      "id" | "profileId"
+    > = {
       title: String(
         f.get("title")
       ).trim(),
 
-      type: String(
-        f.get("type")
-      ) as ItemType,
+      type: String(f.get("type")),
 
-      dueDay: Number(
-        f.get("dueDay")
-      ),
+      recurrence: rec,
 
-      statementDay:
-        f.get("statementDay")
-          ? Number(
-              f.get(
-                "statementDay"
-              )
-            )
+      startDate,
+
+      dueDay:
+        rec === "monthly"
+          ? Number(f.get("dueDay"))
           : undefined,
 
-      amount: f.get("amount")
+      dueDate:
+        rec === "one-time"
+          ? dueDate
+          : undefined,
+
+      endDate:
+        rec === "monthly"
+          ? String(
+              f.get("endDate") || ""
+            ) || undefined
+          : undefined,
+
+      statementDay: f.get(
+        "statementDay"
+      )
         ? Number(
-            f.get("amount")
+            f.get("statementDay")
           )
+        : undefined,
+
+      amount: f.get("amount")
+        ? Number(f.get("amount"))
         : undefined,
 
       note:
         String(
           f.get("note") || ""
-        ).trim() ||
-        undefined,
+        ).trim() || undefined,
 
-      reminderDays,
+      reminderDays: f
+        .getAll("reminderDays")
+        .map(Number)
+        .sort((a, b) => b - a),
     };
 
     try {
@@ -374,26 +560,21 @@ export default function Home() {
         await updateObligation(
           activeProfile.id,
           editingItem.id,
-          itemData
+          data
         );
       } else {
         await createObligation(
           activeProfile.id,
-          itemData
+          data
         );
       }
 
-      closeCommitmentModal();
-    } catch (error) {
-      console.error(
-        "Unable to save commitment:",
-        error
-      );
+      closeCommitment();
+    } catch (e) {
+      console.error(e);
 
       setDataError(
-        editingItem
-          ? "BillTrack could not update this commitment."
-          : "BillTrack could not save this commitment."
+        "BillTrack could not save this commitment."
       );
     } finally {
       setSaving(false);
@@ -407,20 +588,16 @@ export default function Home() {
 
     if (!user) return;
 
-    const f =
+    const name = String(
       new FormData(
         e.currentTarget
-      );
-
-    const name = String(
-      f.get("name")
+      ).get("name") || ""
     ).trim();
 
     if (!name) return;
 
     try {
       setSaving(true);
-      setDataError("");
 
       const id =
         await createProfile(
@@ -430,78 +607,117 @@ export default function Home() {
 
       setProfile(id);
       setProfileModal(false);
-    } catch (error) {
-      console.error(
-        "Unable to save profile:",
-        error
-      );
-
-      setDataError(
-        "BillTrack could not save this profile. Check Firestore rules and try again."
-      );
     } finally {
       setSaving(false);
     }
   }
 
+  async function addNewCategory(
+    e: FormEvent<HTMLFormElement>
+  ) {
+    e.preventDefault();
+
+    if (!activeProfile) return;
+
+    const name = String(
+      new FormData(
+        e.currentTarget
+      ).get("name") || ""
+    ).trim();
+
+    if (!name) return;
+
+    await addCategory(
+      activeProfile.id,
+      name
+    );
+
+    setCategoryModal(false);
+  }
+
   async function deleteItem(
     item: Obligation
   ) {
-    if (!activeProfile) {
+    if (!activeProfile) return;
+
+    if (
+      !confirm(
+        `Delete ${item.title} and its payment history?`
+      )
+    )
       return;
-    }
 
-    try {
-      await removeObligation(
-        activeProfile.id,
-        item.id
-      );
-    } catch (error) {
-      console.error(
-        "Unable to delete commitment:",
-        error
-      );
-
-      setDataError(
-        "BillTrack could not delete this commitment."
-      );
-    }
+    await removeObligation(
+      activeProfile.id,
+      item.id
+    );
   }
 
   async function handleDeleteProfile() {
-    if (!profileToDelete) {
-      return;
-    }
+    if (!profileToDelete) return;
 
     try {
       setDeletingProfile(true);
-      setDataError("");
 
       await deleteProfileWithCommitments(
         profileToDelete.id
       );
 
-      if (
-        profile ===
-        profileToDelete.id
-      ) {
-        setProfile(null);
-        setItems([]);
-      }
-
       setProfileToDelete(null);
-    } catch (error) {
-      console.error(
-        "Unable to delete profile:",
-        error
-      );
+    } catch (e) {
+      console.error(e);
 
       setDataError(
-        "BillTrack could not delete this profile. Please try again."
+        "BillTrack could not delete this profile."
       );
     } finally {
       setDeletingProfile(false);
     }
+  }
+
+  async function savePayment(
+    e: FormEvent<HTMLFormElement>
+  ) {
+    e.preventDefault();
+
+    if (
+      !activeProfile ||
+      !paymentOccurrence
+    )
+      return;
+
+    const f =
+      new FormData(e.currentTarget);
+
+    try {
+      setSaving(true);
+
+      await markOccurrencePaid(
+        activeProfile.id,
+        paymentOccurrence,
+        String(f.get("paidDate")),
+        f.get("paidAmount")
+          ? Number(
+              f.get("paidAmount")
+            )
+          : undefined
+      );
+
+      setPaymentOccurrence(null);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function undoPayment(
+    o: Occurrence
+  ) {
+    if (!activeProfile) return;
+
+    await markOccurrenceUnpaid(
+      activeProfile.id,
+      o
+    );
   }
 
   if (!authReady) {
@@ -516,8 +732,8 @@ export default function Home() {
             <div>
               <h1>BillTrack</h1>
               <span>
-                Stay ahead of
-                what&apos;s due.
+                Stay ahead of what&apos;s
+                due.
               </span>
             </div>
           </div>
@@ -552,8 +768,8 @@ export default function Home() {
             <div>
               <h1>BillTrack</h1>
               <span>
-                Stay ahead of
-                what&apos;s due.
+                Stay ahead of what&apos;s
+                due.
               </span>
             </div>
           </div>
@@ -572,12 +788,11 @@ export default function Home() {
             </h2>
 
             <p className="subtitle">
-              One quiet place for
-              cards, insurance,
-              rent and recurring
-              bills — without
-              connecting a bank
-              account.
+              Track recurring and
+              one-time commitments,
+              actual payments and due
+              dates — without connecting
+              a bank account.
             </p>
 
             <button
@@ -588,23 +803,18 @@ export default function Home() {
             </button>
 
             {authError && (
-              <p
-                style={{
-                  marginTop: 16,
-                }}
-              >
-                {authError}
-              </p>
+              <p>{authError}</p>
             )}
           </div>
 
           <div className="hero-card">
             <span>YOUR DATA</span>
+
             <strong>✓</strong>
 
             <p>
-              Sign in to access
-              BillTrack securely.
+              Sign in to access BillTrack
+              securely.
             </p>
           </div>
         </section>
@@ -623,8 +833,8 @@ export default function Home() {
           <div>
             <h1>BillTrack</h1>
             <span>
-              Stay ahead of
-              what&apos;s due.
+              Stay ahead of what&apos;s
+              due.
             </span>
           </div>
         </div>
@@ -648,55 +858,47 @@ export default function Home() {
         </div>
       </header>
 
-      <section className="hero">
-        <div>
-          <p className="eyebrow">
-            YOUR PAYMENT CALENDAR
-          </p>
+      {/* Keep the large introduction only when there is no active profile */}
+      {!activeProfile && (
+        <section className="hero">
+          <div>
+            <p className="eyebrow">
+              YOUR PAYMENT CALENDAR
+            </p>
 
-          <h2>
-            Nothing important
-            <br />
-            should surprise you.
-          </h2>
+            <h2>
+              Nothing important
+              <br />
+              should surprise you.
+            </h2>
 
-          <p className="subtitle">
-            {activeProfile
-              ? `Viewing ${activeProfile.name}'s commitments. Changes are synchronized securely across your devices.`
-              : "Create your first profile to start tracking that person's commitments."}
-          </p>
-        </div>
+            <p className="subtitle">
+              Create your first profile
+              to start tracking
+              commitments.
+            </p>
+          </div>
 
-        <div className="hero-card">
-          <span>
-            {activeProfile
-              ? `${activeProfile.name.toUpperCase()} · COMING UP`
-              : "GET STARTED"}
-          </span>
+          <div className="hero-card">
+            <span>GET STARTED</span>
 
-          <strong>
-            {activeProfile
-              ? urgent.length
-              : "+"}
-          </strong>
+            <strong>+</strong>
 
-          <p>
-            {activeProfile
-              ? "payments in the next 7 days"
-              : "Create a profile before adding commitments"}
-          </p>
+            <p>
+              Create a profile before
+              adding commitments.
+            </p>
 
-          <button
-            onClick={
-              openCommitmentModal
-            }
-          >
-            {activeProfile
-              ? "＋ Add commitment"
-              : "＋ Add profile"}
-          </button>
-        </div>
-      </section>
+            <button
+              onClick={() =>
+                setProfileModal(true)
+              }
+            >
+              ＋ Add profile
+            </button>
+          </div>
+        </section>
+      )}
 
       <section className="content">
         {dataError && (
@@ -705,482 +907,937 @@ export default function Home() {
           </div>
         )}
 
-        <div className="section-head">
-          <div>
-            <p className="eyebrow">
-              PROFILES
-            </p>
+        {/* Compact dashboard header when a profile is active */}
+        <div
+          className={
+            activeProfile
+              ? "profile-dashboard-head"
+              : ""
+          }
+        >
+          <div className="profile-dashboard-main">
+            <div className="section-head">
+              <div>
+                <p className="eyebrow">
+                  PROFILES
+                </p>
 
-            <h3>
-              Whose commitments are
-              you managing?
-            </h3>
-          </div>
-        </div>
+                <h3>
+                  Whose commitments are
+                  you managing?
+                </h3>
+              </div>
+            </div>
 
-        <div className="profiles">
-          {profiles.map((p) => (
-            <div
-              key={p.id}
-              className={`profile profile-card ${
-                profile === p.id
-                  ? "active"
-                  : ""
-              }`}
-            >
+            <div className="profiles">
+              {profiles.map((p) => (
+                <div
+                  key={p.id}
+                  className={`profile profile-card ${
+                    profile === p.id
+                      ? "active"
+                      : ""
+                  }`}
+                >
+                  <button
+                    type="button"
+                    className="profile-select"
+                    onClick={() =>
+                      setProfile(p.id)
+                    }
+                  >
+                    <span>
+                      {p.initials}
+                    </span>
+
+                    <b>{p.name}</b>
+
+                    <small>
+                      {profile === p.id
+                        ? `${items.length} commitments`
+                        : "Open profile"}
+                    </small>
+                  </button>
+
+                  {p.ownerUid ===
+                    user.uid && (
+                    <button
+                      type="button"
+                      className="profile-menu"
+                      title={`Delete ${p.name}`}
+                      aria-label={`Delete ${p.name}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setProfileToDelete(
+                          p
+                        );
+                      }}
+                    >
+                      ⋯
+                    </button>
+                  )}
+                </div>
+              ))}
+
               <button
-                type="button"
-                className="profile-select"
+                className="profile add-profile"
                 onClick={() =>
-                  setProfile(p.id)
+                  setProfileModal(true)
                 }
               >
-                <span>
-                  {p.initials}
-                </span>
-
-                <b>{p.name}</b>
-
+                <span>＋</span>
+                <b>Add profile</b>
                 <small>
-                  {profile === p.id
-                    ? `${items.length} commitments`
-                    : "Open profile"}
+                  Add another person
                 </small>
               </button>
-
-              {p.ownerUid ===
-                user.uid && (
-                <button
-                  type="button"
-                  className="profile-menu"
-                  title={`Delete ${p.name}`}
-                  aria-label={`Delete ${p.name}`}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setProfileToDelete(
-                      p
-                    );
-                  }}
-                >
-                  ⋯
-                </button>
-              )}
             </div>
-          ))}
-
-          <button
-            className="profile add-profile"
-            onClick={() =>
-              setProfileModal(true)
-            }
-          >
-            <span>＋</span>
-            <b>Add profile</b>
-
-            <small>
-              {profiles.length ===
-              0
-                ? "Create your first profile"
-                : "Add another person"}
-            </small>
-          </button>
-        </div>
-
-        <div className="list-head">
-          <div>
-            <p className="eyebrow">
-              NEXT UP
-            </p>
-
-            <h3>
-              {activeProfile
-                ? `${activeProfile.name}'s commitments`
-                : "No profile selected"}
-            </h3>
           </div>
 
           {activeProfile && (
-            <button
-              className="primary"
-              onClick={
-                openCommitmentModal
-              }
-            >
-              ＋ Add commitment
-            </button>
+            <aside className="profile-month-card">
+              <p className="eyebrow">
+                {activeProfile.name.toUpperCase()}{" "}
+                · THIS MONTH
+              </p>
+
+              <strong>
+                {money(monthScheduled)}
+              </strong>
+
+              <p>
+                {money(monthPaid)} paid ·{" "}
+                {money(monthOverdue)}{" "}
+                overdue
+              </p>
+
+              <button
+                className="primary full"
+                onClick={
+                  openCommitmentModal
+                }
+              >
+                ＋ Add commitment
+              </button>
+            </aside>
           )}
         </div>
 
-        {!activeProfile ? (
-          <div className="empty">
-            Create a profile first.
-            Commitments always
-            belong to one specific
-            person.
-          </div>
-        ) : visible.length === 0 ? (
-          <div className="empty">
-            {activeProfile.name} has
-            no commitments yet. Add
-            one when you&apos;re
-            ready.
-          </div>
-        ) : null}
+        {activeProfile && (
+          <>
+            <div className="summary-grid">
+              <div>
+                <small>
+                  SCHEDULED THIS MONTH
+                </small>
 
-        <div className="bill-list">
-          {[...urgent, ...later].map(
-            (item) => {
-              const d =
-                daysUntil(
-                  item.dueDay
-                );
+                <strong>
+                  {money(
+                    monthScheduled
+                  )}
+                </strong>
+              </div>
 
-              return (
-                <article
-                  className="bill"
-                  key={item.id}
-                >
-                  <div className="bill-icon">
-                    {iconFor(
-                      item.type
-                    )}
-                  </div>
+              <div>
+                <small>
+                  ACTUALLY PAID
+                </small>
 
-                  <div className="bill-main">
-                    <div className="bill-title">
-                      <h4>
-                        {item.title}
-                      </h4>
+                <strong>
+                  {money(monthPaid)}
+                </strong>
+              </div>
+
+              <div>
+                <small>OVERDUE</small>
+
+                <strong>
+                  {money(monthOverdue)}
+                </strong>
+              </div>
+
+              <div>
+                <small>
+                  PAID CYCLES
+                </small>
+
+                <strong>
+                  {
+                    monthOccurrences.filter(
+                      (o) => o.paid
+                    ).length
+                  }
+                  /
+                  {
+                    monthOccurrences.length
+                  }
+                </strong>
+              </div>
+            </div>
+
+            <div className="annual-summary">
+              <div className="annual-summary-head">
+                <div>
+                  <p className="eyebrow">
+                    12-MONTH COMMITMENTS
+                  </p>
+
+                  <h3>
+                    Scheduled by month
+                  </h3>
+                </div>
+
+                <small>
+                  Rolling 12 months from
+                  the current month
+                </small>
+              </div>
+
+              <div className="annual-strip">
+                {rollingMonths.map(
+                  (m) => (
+                    <div
+                      className="annual-month"
+                      key={m.key}
+                    >
+                      <b>
+                        {m.month}
+                      </b>
 
                       <span>
-                        {item.type}
+                        {m.year}
                       </span>
+
+                      <strong>
+                        {money(m.total)}
+                      </strong>
+
+                      <small>
+                        {m.pending > 0
+                          ? `${money(
+                              m.pending
+                            )} pending`
+                          : "No pending"}
+                      </small>
                     </div>
+                  )
+                )}
+              </div>
 
-                    <p>
-                      {
-                        activeProfile?.name
-                      }
-
-                      {item.statementDay
-                        ? ` · Statement day ${item.statementDay}`
-                        : ""}
-
-                      {item.reminderDays
-                        ?.length
-                        ? ` · Remind ${item.reminderDays
-                            .map(
-                              (n) =>
-                                n ===
-                                0
-                                  ? "due day"
-                                  : `${n}d`
-                            )
-                            .join(
-                              ", "
-                            )}`
-                        : ""}
-
-                      {item.note
-                        ? ` · ${item.note}`
-                        : ""}
-                    </p>
-                  </div>
-
-                  <div className="due">
-                    <small>DUE</small>
-
-                    <strong>
-                      {formatDue(
-                        item.dueDay
-                      )}
-                    </strong>
-
-                    <span
-                      className={
-                        d <= 3
-                          ? "danger"
-                          : d <=
-                              7
-                            ? "warn"
-                            : "safe"
-                      }
-                    >
-                      {d === 0
-                        ? "Today"
-                        : d === 1
-                          ? "Tomorrow"
-                          : `In ${d} days`}
-                    </span>
-                  </div>
-
-                  <div className="amount">
-                    {item.amount
-                      ? `$${item.amount.toLocaleString()}`
-                      : "—"}
+              {pastDueMonths.length >
+                0 && (
+                <div className="past-due-summary">
+                  <div className="past-due-label">
+                    <b>
+                      PAST DUE
+                    </b>
 
                     <small>
-                      {item.amount
-                        ? "expected"
-                        : "amount optional"}
+                      Unpaid commitments
+                      from previous months
                     </small>
                   </div>
 
-                  <div className="bill-actions">
-                    <button
-                      type="button"
-                      className="bill-action"
-                      title="Edit commitment"
-                      aria-label={`Edit ${item.title}`}
-                      onClick={() =>
-                        openEditCommitmentModal(
-                          item
-                        )
-                      }
-                    >
-                      ✎
-                    </button>
+                  <div className="past-due-strip">
+                    {pastDueMonths.map(
+                      (m) => (
+                        <div
+                          className="past-due-month"
+                          key={m.key}
+                        >
+                          <b>
+                            {m.month}{" "}
+                            {m.year}
+                          </b>
 
-                    <button
-                      type="button"
-                      className="bill-action delete-action"
-                      title="Delete commitment"
-                      aria-label={`Delete ${item.title}`}
-                      onClick={() =>
-                        deleteItem(
-                          item
-                        )
-                      }
-                    >
-                      ×
-                    </button>
+                          <strong>
+                            {money(
+                              m.total
+                            )}
+                          </strong>
+                        </div>
+                      )
+                    )}
                   </div>
-                </article>
-              );
-            }
-          )}
-        </div>
+                </div>
+              )}
+            </div>
 
-        <p className="privacy">
-          ● Synced with Firestore ·
-          Each profile has its own
-          commitments · No bank
-          connection
-        </p>
+            <div className="list-head">
+              <div>
+                <p className="eyebrow">
+                  NEXT UP
+                </p>
+
+                <h3>
+                  {
+                    activeProfile.name
+                  }
+                  &apos;s commitments
+                </h3>
+              </div>
+
+              <button
+                className="primary"
+                onClick={
+                  openCommitmentModal
+                }
+              >
+                ＋ Add commitment
+              </button>
+            </div>
+
+            {visible.length === 0 && (
+              <div className="empty">
+                No commitments yet. Add
+                one when you&apos;re
+                ready.
+              </div>
+            )}
+
+            <div className="bill-list">
+              {visible.map((item) => {
+                const current =
+                  currentOccurrence(
+                    item
+                  );
+
+                const state = current
+                  ? occurrenceState(
+                      current
+                    )
+                  : null;
+
+                const cycles = (
+                  byObligation.get(
+                    item.id
+                  ) ?? []
+                ).slice(0, 12);
+
+                return (
+                  <article
+                    className="bill bill-expanded"
+                    key={item.id}
+                  >
+                    <div className="bill-icon">
+                      {iconFor(
+                        item.type
+                      )}
+                    </div>
+
+                    <div className="bill-main">
+                      <div className="bill-title">
+                        <h4>
+                          {item.title}
+                        </h4>
+
+                        <span>
+                          {item.type}
+                        </span>
+
+                        <span>
+                          {item.recurrence ===
+                          "monthly"
+                            ? "Monthly"
+                            : "One time"}
+                        </span>
+                      </div>
+
+                      <p>
+                        {
+                          activeProfile.name
+                        }
+                        {item.note
+                          ? ` · ${item.note}`
+                          : ""}
+                      </p>
+                    </div>
+
+                    <div className="due">
+                      <small>
+                        {current?.paid
+                          ? "LAST CYCLE"
+                          : "DUE"}
+                      </small>
+
+                      <strong>
+                        {current
+                          ? formatDate(
+                              current.dueDate
+                            )
+                          : "—"}
+                      </strong>
+
+                      {state && (
+                        <span
+                          className={
+                            state.cls
+                          }
+                        >
+                          {
+                            state.label
+                          }
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="amount">
+                      {money(
+                        current?.expectedAmount ??
+                          item.amount
+                      )}
+
+                      <small>
+                        expected
+                      </small>
+                    </div>
+
+                    <div className="bill-actions">
+                      <button
+                        className="bill-action"
+                        title="Edit"
+                        onClick={() =>
+                          openEdit(item)
+                        }
+                      >
+                        ✎
+                      </button>
+
+                      <button
+                        className="bill-action delete-action"
+                        title="Delete"
+                        onClick={() =>
+                          deleteItem(
+                            item
+                          )
+                        }
+                      >
+                        ×
+                      </button>
+                    </div>
+
+                    {current &&
+                      !current.paid && (
+                        <button
+                          className="paid-button"
+                          onClick={() =>
+                            setPaymentOccurrence(
+                              current
+                            )
+                          }
+                        >
+                          ✓ Mark paid
+                        </button>
+                      )}
+
+                    <div className="cycle-strip">
+                      {cycles.map(
+                        (o) => {
+                          const st =
+                            occurrenceState(
+                              o
+                            );
+
+                          return (
+                            <button
+                              key={
+                                o.id
+                              }
+                              className={`cycle ${
+                                o.paid
+                                  ? "cycle-paid"
+                                  : ""
+                              }`}
+                              title={`${formatDate(
+                                o.dueDate
+                              )} · ${
+                                st.label
+                              }`}
+                              onClick={() =>
+                                o.paid
+                                  ? undoPayment(
+                                      o
+                                    )
+                                  : setPaymentOccurrence(
+                                      o
+                                    )
+                              }
+                            >
+                              <b>
+                                {parseDate(
+                                  o.dueDate
+                                ).toLocaleDateString(
+                                  "en-CA",
+                                  {
+                                    month:
+                                      "short",
+                                  }
+                                )}
+                              </b>
+
+                              <span
+                                className={
+                                  st.cls
+                                }
+                              >
+                                {o.paid
+                                  ? "✓"
+                                  : o.dueDate <
+                                    todayIso()
+                                  ? "!"
+                                  : "○"}
+                              </span>
+
+                              <small>
+                                {o.paid &&
+                                o.paidAmount !=
+                                  null
+                                  ? money(
+                                      o.paidAmount
+                                    )
+                                  : money(
+                                      o.expectedAmount
+                                    )}
+                              </small>
+                            </button>
+                          );
+                        }
+                      )}
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+
+            <p className="privacy">
+              ● Synced with Firestore ·
+              Payment history stays with
+              each cycle · No bank
+              connection
+            </p>
+          </>
+        )}
       </section>
 
-      {modal &&
+      {modal && activeProfile && (
+        <div
+          className="backdrop"
+          onMouseDown={
+            closeCommitment
+          }
+        >
+          <div
+            className="modal"
+            onMouseDown={(e) =>
+              e.stopPropagation()
+            }
+          >
+            <button
+              className="close"
+              onClick={
+                closeCommitment
+              }
+            >
+              ×
+            </button>
+
+            <p className="eyebrow">
+              {editingItem
+                ? "EDIT COMMITMENT"
+                : "NEW COMMITMENT"}{" "}
+              ·{" "}
+              {activeProfile.name.toUpperCase()}
+            </p>
+
+            <h3>
+              {editingItem
+                ? "Edit commitment"
+                : "Add a commitment"}
+            </h3>
+
+            <form
+              key={
+                editingItem?.id ??
+                "new"
+              }
+              onSubmit={saveItem}
+            >
+              <label>
+                Name
+                <input
+                  name="title"
+                  defaultValue={
+                    editingItem?.title ??
+                    ""
+                  }
+                  placeholder="e.g. Ford F-150 Lease"
+                  required
+                />
+              </label>
+
+              <div className="grid2">
+                <label>
+                  Category
+                  <select
+                    name="type"
+                    defaultValue={
+                      editingItem?.type ??
+                      categories[0]
+                        ?.name ??
+                      "Other"
+                    }
+                  >
+                    {categories.map(
+                      (c) => (
+                        <option
+                          key={
+                            c.id
+                          }
+                        >
+                          {
+                            c.name
+                          }
+                        </option>
+                      )
+                    )}
+                  </select>
+                </label>
+
+                <label>
+                  Recurrence
+                  <select
+                    name="recurrence"
+                    value={
+                      recurrence
+                    }
+                    onChange={(e) =>
+                      setRecurrence(
+                        e.target
+                          .value as Recurrence
+                      )
+                    }
+                  >
+                    <option value="monthly">
+                      Monthly
+                    </option>
+
+                    <option value="one-time">
+                      One time
+                    </option>
+                  </select>
+                </label>
+              </div>
+
+              <button
+                type="button"
+                className="text-button"
+                onClick={() =>
+                  setCategoryModal(
+                    true
+                  )
+                }
+              >
+                ＋ Add category
+              </button>
+
+              {recurrence ===
+              "monthly" ? (
+                <>
+                  <div className="grid2">
+                    <label>
+                      Due day
+                      <input
+                        name="dueDay"
+                        type="number"
+                        min="1"
+                        max="31"
+                        defaultValue={
+                          editingItem?.dueDay ??
+                          1
+                        }
+                        required
+                      />
+                    </label>
+
+                    <label>
+                      Statement day
+                      (optional)
+                      <input
+                        name="statementDay"
+                        type="number"
+                        min="1"
+                        max="31"
+                        defaultValue={
+                          editingItem?.statementDay ??
+                          ""
+                        }
+                      />
+                    </label>
+                  </div>
+
+                  <div className="grid2">
+                    <label>
+                      Starts
+                      <input
+                        name="startDate"
+                        type="date"
+                        defaultValue={
+                          editingItem?.startDate ??
+                          todayIso()
+                        }
+                        required
+                      />
+                    </label>
+
+                    <label>
+                      Ends (optional)
+                      <input
+                        name="endDate"
+                        type="date"
+                        defaultValue={
+                          editingItem?.endDate ??
+                          ""
+                        }
+                      />
+                    </label>
+                  </div>
+                </>
+              ) : (
+                <label>
+                  Due date
+                  <input
+                    name="dueDate"
+                    type="date"
+                    defaultValue={
+                      editingItem?.dueDate ??
+                      editingItem?.startDate ??
+                      todayIso()
+                    }
+                    required
+                  />
+                </label>
+              )}
+
+              <label>
+                Expected amount
+                (optional)
+                <input
+                  name="amount"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  defaultValue={
+                    editingItem?.amount ??
+                    ""
+                  }
+                  placeholder="685.00"
+                />
+              </label>
+
+              <label>
+                Note (optional)
+                <input
+                  name="note"
+                  defaultValue={
+                    editingItem?.note ??
+                    ""
+                  }
+                />
+              </label>
+
+              <fieldset className="reminders">
+                <legend>
+                  Payment reminders
+                </legend>
+
+                <p>
+                  Choose when BillTrack
+                  should notify you
+                  before the due date.
+                </p>
+
+                <div className="reminder-options">
+                  {[10, 7, 3, 0].map(
+                    (d) => (
+                      <label key={d}>
+                        <input
+                          type="checkbox"
+                          name="reminderDays"
+                          value={d}
+                          defaultChecked={
+                            editingItem
+                              ? editingItem.reminderDays?.includes(
+                                  d
+                                )
+                              : true
+                          }
+                        />
+
+                        {d === 0
+                          ? "On due date"
+                          : `${d} days before`}
+                      </label>
+                    )
+                  )}
+                </div>
+              </fieldset>
+
+              <button
+                className="primary full"
+                disabled={saving}
+              >
+                {saving
+                  ? "Saving..."
+                  : editingItem
+                  ? "Save changes"
+                  : "Save commitment"}
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {paymentOccurrence && (
+        <div
+          className="backdrop"
+          onMouseDown={() =>
+            setPaymentOccurrence(
+              null
+            )
+          }
+        >
+          <div
+            className="modal small"
+            onMouseDown={(e) =>
+              e.stopPropagation()
+            }
+          >
+            <button
+              className="close"
+              onClick={() =>
+                setPaymentOccurrence(
+                  null
+                )
+              }
+            >
+              ×
+            </button>
+
+            <p className="eyebrow">
+              RECORD PAYMENT
+            </p>
+
+            <h3>
+              Mark cycle as paid
+            </h3>
+
+            <p className="payment-context">
+              Due{" "}
+              {formatDate(
+                paymentOccurrence.dueDate
+              )}{" "}
+              · Expected{" "}
+              {money(
+                paymentOccurrence.expectedAmount
+              )}
+            </p>
+
+            <form
+              onSubmit={
+                savePayment
+              }
+            >
+              <label>
+                Actual amount paid
+                <input
+                  name="paidAmount"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  defaultValue={
+                    paymentOccurrence.expectedAmount ??
+                    ""
+                  }
+                />
+              </label>
+
+              <label>
+                Actual payment date
+                <input
+                  name="paidDate"
+                  type="date"
+                  defaultValue={
+                    todayIso()
+                  }
+                  required
+                />
+              </label>
+
+              <button
+                className="primary full"
+                disabled={saving}
+              >
+                {saving
+                  ? "Saving..."
+                  : "✓ Mark paid"}
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {categoryModal &&
         activeProfile && (
           <div
             className="backdrop"
-            onMouseDown={
-              closeCommitmentModal
+            onMouseDown={() =>
+              setCategoryModal(
+                false
+              )
             }
           >
             <div
-              className="modal"
+              className="modal small"
               onMouseDown={(e) =>
                 e.stopPropagation()
               }
             >
               <button
                 className="close"
-                type="button"
-                onClick={
-                  closeCommitmentModal
+                onClick={() =>
+                  setCategoryModal(
+                    false
+                  )
                 }
               >
                 ×
               </button>
 
               <p className="eyebrow">
-                {editingItem
-                  ? "EDIT COMMITMENT"
-                  : "NEW COMMITMENT"}{" "}
-                ·{" "}
-                {activeProfile.name.toUpperCase()}
+                CATEGORY CATALOG
               </p>
 
               <h3>
-                {editingItem
-                  ? "Edit commitment"
-                  : "Add a commitment"}
+                Add a category
               </h3>
 
               <form
-                key={
-                  editingItem?.id ??
-                  "new"
+                onSubmit={
+                  addNewCategory
                 }
-                onSubmit={saveItem}
               >
                 <label>
-                  Name
-
+                  Category name
                   <input
-                    name="title"
-                    placeholder="e.g. RBC Visa"
-                    defaultValue={
-                      editingItem?.title ??
-                      ""
-                    }
+                    name="name"
+                    placeholder="e.g. Condo Fee"
+                    autoFocus
                     required
                   />
                 </label>
 
-                <label>
-                  Type
-
-                  <select
-                    name="type"
-                    defaultValue={
-                      editingItem?.type ??
-                      "Credit Card"
-                    }
-                  >
-                    <option>
-                      Credit Card
-                    </option>
-                    <option>
-                      Insurance
-                    </option>
-                    <option>
-                      Rent
-                    </option>
-                    <option>
-                      Utility
-                    </option>
-                    <option>
-                      Subscription
-                    </option>
-                    <option>
-                      Other
-                    </option>
-                  </select>
-                </label>
-
-                <div className="grid2">
-                  <label>
-                    Payment due day
-
-                    <input
-                      name="dueDay"
-                      type="number"
-                      min="1"
-                      max="31"
-                      placeholder="28"
-                      defaultValue={
-                        editingItem?.dueDay ??
-                        ""
-                      }
-                      required
-                    />
-                  </label>
-
-                  <label>
-                    Statement day
-                    (optional)
-
-                    <input
-                      name="statementDay"
-                      type="number"
-                      min="1"
-                      max="31"
-                      placeholder="7"
-                      defaultValue={
-                        editingItem?.statementDay ??
-                        ""
-                      }
-                    />
-                  </label>
-                </div>
-
-                <label>
-                  Amount (optional)
-
-                  <input
-                    name="amount"
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    placeholder="400"
-                    defaultValue={
-                      editingItem?.amount ??
-                      ""
-                    }
-                  />
-                </label>
-
-                <label>
-                  Note (optional)
-
-                  <input
-                    name="note"
-                    placeholder="Pay total if possible"
-                    defaultValue={
-                      editingItem?.note ??
-                      ""
-                    }
-                  />
-                </label>
-
-                <fieldset className="reminders">
-                  <legend>
-                    Payment reminders
-                  </legend>
-
-                  <p>
-                    Choose when
-                    BillTrack should
-                    notify you before
-                    the payment due
-                    date.
-                  </p>
-
-                  <div className="reminder-options">
-                    {[
-                      10, 7, 3, 0,
-                    ].map(
-                      (days) => (
-                        <label
-                          key={
-                            days
-                          }
-                        >
-                          <input
-                            type="checkbox"
-                            name="reminderDays"
-                            value={
-                              days
-                            }
-                            defaultChecked={
-                              editingItem
-                                ? editingItem.reminderDays?.includes(
-                                    days
-                                  )
-                                : true
-                            }
-                          />
-
-                          {days ===
-                          0
-                            ? "On due date"
-                            : `${days} days before`}
-                        </label>
-                      )
-                    )}
-                  </div>
-                </fieldset>
-
-                <button
-                  className="primary full"
-                  disabled={saving}
-                >
-                  {saving
-                    ? "Saving..."
-                    : editingItem
-                      ? "Save changes"
-                      : "Save commitment"}
+                <button className="primary full">
+                  Add category
                 </button>
               </form>
             </div>
@@ -1216,17 +1873,17 @@ export default function Home() {
             </p>
 
             <h3>
-              Whose commitments
-              will this profile
-              track?
+              Whose commitments will
+              this profile track?
             </h3>
 
             <form
-              onSubmit={addProfile}
+              onSubmit={
+                addProfile
+              }
             >
               <label>
                 Name
-
                 <input
                   name="name"
                   placeholder="e.g. Alain"
@@ -1251,15 +1908,10 @@ export default function Home() {
       {profileToDelete && (
         <div
           className="backdrop"
-          onMouseDown={() => {
-            if (
-              !deletingProfile
-            ) {
-              setProfileToDelete(
-                null
-              );
-            }
-          }}
+          onMouseDown={() =>
+            !deletingProfile &&
+            setProfileToDelete(null)
+          }
         >
           <div
             className="modal small"
@@ -1269,7 +1921,6 @@ export default function Home() {
           >
             <button
               className="close"
-              type="button"
               disabled={
                 deletingProfile
               }
@@ -1295,17 +1946,13 @@ export default function Home() {
             </h3>
 
             <p className="delete-warning">
-              This will permanently
-              delete this profile
-              and all of its
-              commitments. This
-              action cannot be
-              undone.
+              This permanently deletes
+              the profile, commitments
+              and payment history.
             </p>
 
             <div className="delete-actions">
               <button
-                type="button"
                 className="ghost"
                 disabled={
                   deletingProfile
@@ -1320,7 +1967,6 @@ export default function Home() {
               </button>
 
               <button
-                type="button"
                 className="danger-button"
                 disabled={
                   deletingProfile
