@@ -322,6 +322,18 @@ export default function Home() {
     }
   }, [occurrences]);
 
+  useEffect(() => {
+    const badgeNavigator = navigator as Navigator & {
+      setAppBadge?: (count?: number) => Promise<void>;
+    };
+
+    if (badgeNavigator.setAppBadge) {
+      badgeNavigator
+        .setAppBadge(7)
+        .catch(console.error);
+    }
+  }, []);
+    
   const activeProfile =
     profiles.find((p) => p.id === profile) ?? null;
 
