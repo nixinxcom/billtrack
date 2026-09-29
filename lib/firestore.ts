@@ -273,6 +273,14 @@ export async function deleteProfileWithCommitments(profileId: string) {
     expenseCatalogs.docs.slice(i, i + 400).forEach((d) => batch.delete(d.ref));
     await batch.commit();
   }
+  const planningItems = await getDocs(collection(db, "profiles", profileId, "planningItems"));
+  for (let i = 0; i < planningItems.docs.length; i += 400) {
+    const batch = writeBatch(db); planningItems.docs.slice(i, i + 400).forEach((d) => batch.delete(d.ref)); await batch.commit();
+  }
+  const planningCatalogs = await getDocs(collection(db, "profiles", profileId, "planningCatalogItems"));
+  for (let i = 0; i < planningCatalogs.docs.length; i += 400) {
+    const batch = writeBatch(db); planningCatalogs.docs.slice(i, i + 400).forEach((d) => batch.delete(d.ref)); await batch.commit();
+  }
   await deleteDoc(doc(db, "profiles", profileId));
 }
 
@@ -483,3 +491,119 @@ export async function removeExpense(profileId: string, expenseId: string) {
 export function expenseCatalogSelection(item?: ExpenseCatalogItem) {
   return catalogSnapshot(item);
 }
+
+
+// -------------------------------------------------------
+// Planning
+// -------------------------------------------------------
+
+export type PlanningCatalogType =
+  | "category"
+  | "nature"
+  | "relevance"
+  | "frequency"
+  | "status"
+  | "confidence";
+
+export type PlanningCatalogItem = {
+  id: string;
+  profileId: string;
+  catalogType: PlanningCatalogType;
+  name: string;
+  systemKey?: string;
+  active: boolean;
+  sortOrder: number;
+};
+
+export type PlanningItem = {
+  id: string;
+  profileId: string;
+  title: string;
+  type: "inflow" | "outflow";
+  estimatedAmount: number;
+  startDate?: string;
+  targetDate: string;
+  note?: string;
+  categoryId?: string; categoryName?: string;
+  natureId?: string; natureName?: string;
+  relevanceId?: string; relevanceName?: string;
+  frequencyId?: string; frequencyName?: string;
+  statusId?: string; statusName?: string; statusSystemKey?: string;
+  confidenceId?: string; confidenceName?: string;
+};
+
+const DEFAULT_PLANNING_CATALOGS: Record<PlanningCatalogType, Array<{ name: string; systemKey?: string }>> = {
+  category: [
+    { name: "Education" }, { name: "Travel" }, { name: "Vehicle" }, { name: "Home" },
+    { name: "Family" }, { name: "Health" }, { name: "Income" }, { name: "Government / OSAP" },
+    { name: "Savings / Investment" }, { name: "Other", systemKey: "other" },
+  ],
+  nature: [
+    { name: "Planned", systemKey: "planned" }, { name: "Expected", systemKey: "expected" },
+    { name: "Estimated", systemKey: "estimated" }, { name: "Goal", systemKey: "goal" },
+  ],
+  relevance: [
+    { name: "Essential", systemKey: "essential" }, { name: "Important", systemKey: "important" },
+    { name: "Optional", systemKey: "optional" },
+  ],
+  frequency: [
+    { name: "One-time", systemKey: "one-time" }, { name: "Weekly", systemKey: "weekly" },
+    { name: "Biweekly", systemKey: "biweekly" }, { name: "Monthly", systemKey: "monthly" },
+    { name: "Quarterly", systemKey: "quarterly" }, { name: "Semiannual", systemKey: "semiannual" },
+    { name: "Annual", systemKey: "annual" }, { name: "Irregular", systemKey: "irregular" },
+  ],
+  status: [
+    { name: "Idea", systemKey: "idea" }, { name: "Planned", systemKey: "planned" },
+    { name: "Partially committed", systemKey: "partially-committed" }, { name: "Committed", systemKey: "committed" },
+    { name: "Completed / Received", systemKey: "completed" }, { name: "Cancelled", systemKey: "cancelled" },
+  ],
+  confidence: [
+    { name: "Tentative", systemKey: "tentative" }, { name: "Likely", systemKey: "likely" },
+    { name: "Confirmed", systemKey: "confirmed" },
+  ],
+};
+
+export function watchPlanningItems(profileId: string, callback: (items: PlanningItem[]) => void) {
+  return onSnapshot(collection(db, "profiles", profileId, "planningItems"), (snapshot) => {
+    const items = snapshot.docs.map((d) => ({ id: d.id, profileId, ...d.data() } as PlanningItem));
+    callback(items.sort((a, b) => a.targetDate.localeCompare(b.targetDate)));
+  });
+}
+
+export function watchPlanningCatalogs(profileId: string, callback: (items: PlanningCatalogItem[]) => void) {
+  return onSnapshot(collection(db, "profiles", profileId, "planningCatalogItems"), (snapshot) => {
+    const items = snapshot.docs.map((d) => ({ id: d.id, profileId, ...d.data() } as PlanningCatalogItem));
+    callback(items.sort((a,b) => a.catalogType.localeCompare(b.catalogType) || a.sortOrder-b.sortOrder || a.name.localeCompare(b.name)));
+  });
+}
+
+export async function ensurePlanningCatalogs(profileId: string) {
+  const ref = collection(db, "profiles", profileId, "planningCatalogItems");
+  const existing = await getDocs(ref);
+  if (!existing.empty) return;
+  const batch = writeBatch(db);
+  (Object.keys(DEFAULT_PLANNING_CATALOGS) as PlanningCatalogType[]).forEach((catalogType) => {
+    DEFAULT_PLANNING_CATALOGS[catalogType].forEach((item, index) => {
+      batch.set(doc(ref), { catalogType, name:item.name, systemKey:item.systemKey ?? null, active:true, sortOrder:index, createdAt:serverTimestamp(), updatedAt:serverTimestamp() });
+    });
+  });
+  await batch.commit();
+}
+
+export async function addPlanningCatalogItem(profileId:string, catalogType:PlanningCatalogType, name:string) {
+  const clean=name.trim(); if(!clean) return;
+  const existing=await getDocs(collection(db,"profiles",profileId,"planningCatalogItems"));
+  const sortOrder=existing.docs.filter(d=>d.data().catalogType===catalogType).length;
+  await addDoc(collection(db,"profiles",profileId,"planningCatalogItems"), {catalogType,name:clean,systemKey:null,active:true,sortOrder,createdAt:serverTimestamp(),updatedAt:serverTimestamp()});
+}
+export async function updatePlanningCatalogItem(profileId:string,itemId:string,changes:{name?:string;active?:boolean}) {
+  const payload:Record<string,unknown>={updatedAt:serverTimestamp()};
+  if(changes.name!==undefined) payload.name=changes.name.trim(); if(changes.active!==undefined) payload.active=changes.active;
+  await updateDoc(doc(db,"profiles",profileId,"planningCatalogItems",itemId),payload);
+}
+export async function removePlanningCatalogItem(profileId:string,itemId:string){await deleteDoc(doc(db,"profiles",profileId,"planningCatalogItems",itemId));}
+function planningPayload(input:Omit<PlanningItem,"id"|"profileId">){return Object.fromEntries(Object.entries(input).filter(([,v])=>v!==undefined));}
+export async function createPlanningItem(profileId:string,input:Omit<PlanningItem,"id"|"profileId">){await addDoc(collection(db,"profiles",profileId,"planningItems"),{...planningPayload(input),createdAt:serverTimestamp(),updatedAt:serverTimestamp()});}
+export async function updatePlanningItem(profileId:string,itemId:string,input:Omit<PlanningItem,"id"|"profileId">){await updateDoc(doc(db,"profiles",profileId,"planningItems",itemId),{...planningPayload(input),updatedAt:serverTimestamp()});}
+export async function removePlanningItem(profileId:string,itemId:string){await deleteDoc(doc(db,"profiles",profileId,"planningItems",itemId));}
+export function planningCatalogSelection(item?:PlanningCatalogItem){return item?{id:item.id,name:item.name,systemKey:item.systemKey}:{id:undefined,name:undefined,systemKey:undefined};}

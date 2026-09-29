@@ -1094,6 +1094,10 @@ export default function Home() {
             Expenses
           </Link>
 
+          <Link className="ghost nav-link" href="/planning">
+            Planning
+          </Link>
+
           <button
             className="ghost"
             onClick={handleLogout}

@@ -37,6 +37,16 @@ service cloud.firestore {
         allow read: if isMember(profileId);
         allow create, update, delete: if canEdit(profileId);
       }
+
+      match /planningItems/{itemId} {
+        allow read: if isMember(profileId);
+        allow create, update, delete: if canEdit(profileId);
+      }
+
+      match /planningCatalogItems/{itemId} {
+        allow read: if isMember(profileId);
+        allow create, update, delete: if canEdit(profileId);
+      }
     }
 
     match /users/{uid} {

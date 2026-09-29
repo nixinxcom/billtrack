@@ -156,7 +156,7 @@ export default function ExpensesPage() {
         <div className="account-actions"><Link className="ghost nav-link" href="/">Commitments</Link><button className="ghost" onClick={() => logout()}>Sign out</button></div>
       </header>
 
-      <nav className="module-nav"><Link href="/">Commitments</Link><Link className="active" href="/expenses">Expenses</Link><span>Planning</span></nav>
+      <nav className="module-nav"><Link href="/">Commitments</Link><Link className="active" href="/expenses">Expenses</Link><Link href="/planning">Planning</Link></nav>
 
       <section className="content expenses-content">
         {error && <div className="data-error">{error}</div>}
