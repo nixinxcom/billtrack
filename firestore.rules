@@ -27,10 +27,25 @@ service cloud.firestore {
         allow read: if isMember(profileId);
         allow create, update, delete: if canEdit(profileId);
       }
+
+      match /expenses/{expenseId} {
+        allow read: if isMember(profileId);
+        allow create, update, delete: if canEdit(profileId);
+      }
+
+      match /expenseCatalogItems/{itemId} {
+        allow read: if isMember(profileId);
+        allow create, update, delete: if canEdit(profileId);
+      }
     }
 
-    match /users/{uid}/pushTokens/{tokenId} {
-      allow read, create, update, delete: if signedIn() && request.auth.uid == uid;
+    match /users/{uid} {
+      allow read, create, update: if signedIn() && request.auth.uid == uid;
+      allow delete: if false;
+
+      match /pushTokens/{tokenId} {
+        allow read, create, update, delete: if signedIn() && request.auth.uid == uid;
+      }
     }
 
     match /notificationLogs/{logId} {

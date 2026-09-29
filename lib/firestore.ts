@@ -261,6 +261,18 @@ export async function deleteProfileWithCommitments(profileId: string) {
     categories.docs.forEach((d) => batch.delete(d.ref));
     await batch.commit();
   }
+  const expenses = await getDocs(collection(db, "profiles", profileId, "expenses"));
+  for (let i = 0; i < expenses.docs.length; i += 400) {
+    const batch = writeBatch(db);
+    expenses.docs.slice(i, i + 400).forEach((d) => batch.delete(d.ref));
+    await batch.commit();
+  }
+  const expenseCatalogs = await getDocs(collection(db, "profiles", profileId, "expenseCatalogItems"));
+  for (let i = 0; i < expenseCatalogs.docs.length; i += 400) {
+    const batch = writeBatch(db);
+    expenseCatalogs.docs.slice(i, i + 400).forEach((d) => batch.delete(d.ref));
+    await batch.commit();
+  }
   await deleteDoc(doc(db, "profiles", profileId));
 }
 
@@ -312,4 +324,162 @@ export async function migrateLocalData(uid: string) {
     }
   }
   localStorage.setItem(marker, "1");
+}
+
+// -------------------------------------------------------
+// Expenses
+// -------------------------------------------------------
+
+export type ExpenseCatalogType =
+  | "category"
+  | "paymentMethod"
+  | "nature"
+  | "relevance"
+  | "frequency";
+
+export type ExpenseCatalogItem = {
+  id: string;
+  profileId: string;
+  catalogType: ExpenseCatalogType;
+  name: string;
+  systemKey?: string;
+  active: boolean;
+  sortOrder: number;
+};
+
+export type Expense = {
+  id: string;
+  profileId: string;
+  concept: string;
+  amount: number;
+  date: string;
+  note?: string;
+  categoryId?: string;
+  categoryName?: string;
+  paymentMethodId?: string;
+  paymentMethodName?: string;
+  natureId?: string;
+  natureName?: string;
+  relevanceId?: string;
+  relevanceName?: string;
+  frequencyId?: string;
+  frequencyName?: string;
+};
+
+const DEFAULT_EXPENSE_CATALOGS: Record<ExpenseCatalogType, Array<{ name: string; systemKey?: string }>> = {
+  category: [
+    { name: "Groceries" }, { name: "Dining" }, { name: "Transportation" },
+    { name: "Home" }, { name: "Family" }, { name: "Health" },
+    { name: "Education" }, { name: "Entertainment" }, { name: "Travel" },
+    { name: "Personal" }, { name: "Gifts" }, { name: "Other", systemKey: "other" },
+  ],
+  paymentMethod: [
+    { name: "Cash", systemKey: "cash" }, { name: "Credit", systemKey: "credit" },
+    { name: "Debit", systemKey: "debit" }, { name: "Transfer", systemKey: "transfer" },
+    { name: "Other", systemKey: "other" },
+  ],
+  nature: [
+    { name: "Recurring", systemKey: "recurring" }, { name: "One-time", systemKey: "one-time" },
+    { name: "Sporadic", systemKey: "sporadic" }, { name: "Unexpected", systemKey: "unexpected" },
+  ],
+  relevance: [
+    { name: "Essential", systemKey: "essential" }, { name: "Important", systemKey: "important" },
+    { name: "Discretionary", systemKey: "discretionary" },
+  ],
+  frequency: [
+    { name: "Daily", systemKey: "daily" }, { name: "Weekly", systemKey: "weekly" },
+    { name: "Biweekly", systemKey: "biweekly" }, { name: "Monthly", systemKey: "monthly" },
+    { name: "Quarterly", systemKey: "quarterly" }, { name: "Semiannual", systemKey: "semiannual" },
+    { name: "Annual", systemKey: "annual" }, { name: "One-time", systemKey: "one-time" },
+    { name: "Irregular", systemKey: "irregular" },
+  ],
+};
+
+export function watchExpenses(profileId: string, callback: (items: Expense[]) => void) {
+  return onSnapshot(collection(db, "profiles", profileId, "expenses"), (snapshot) => {
+    const items = snapshot.docs.map((d) => ({ id: d.id, profileId, ...d.data() } as Expense));
+    callback(items.sort((a, b) => b.date.localeCompare(a.date)));
+  });
+}
+
+export function watchExpenseCatalogs(profileId: string, callback: (items: ExpenseCatalogItem[]) => void) {
+  return onSnapshot(collection(db, "profiles", profileId, "expenseCatalogItems"), (snapshot) => {
+    const items = snapshot.docs.map((d) => ({ id: d.id, profileId, ...d.data() } as ExpenseCatalogItem));
+    callback(items.sort((a, b) => a.catalogType.localeCompare(b.catalogType) || a.sortOrder - b.sortOrder || a.name.localeCompare(b.name)));
+  });
+}
+
+export async function ensureExpenseCatalogs(profileId: string) {
+  const ref = collection(db, "profiles", profileId, "expenseCatalogItems");
+  const existing = await getDocs(ref);
+  if (!existing.empty) return;
+  const batch = writeBatch(db);
+  (Object.keys(DEFAULT_EXPENSE_CATALOGS) as ExpenseCatalogType[]).forEach((catalogType) => {
+    DEFAULT_EXPENSE_CATALOGS[catalogType].forEach((item, index) => {
+      const itemRef = doc(ref);
+      batch.set(itemRef, {
+        catalogType,
+        name: item.name,
+        systemKey: item.systemKey ?? null,
+        active: true,
+        sortOrder: index,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    });
+  });
+  await batch.commit();
+}
+
+export async function addExpenseCatalogItem(profileId: string, catalogType: ExpenseCatalogType, name: string) {
+  const clean = name.trim();
+  if (!clean) return;
+  const existing = await getDocs(collection(db, "profiles", profileId, "expenseCatalogItems"));
+  const sortOrder = existing.docs.filter((d) => d.data().catalogType === catalogType).length;
+  await addDoc(collection(db, "profiles", profileId, "expenseCatalogItems"), {
+    catalogType, name: clean, systemKey: null, active: true, sortOrder,
+    createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+  });
+}
+
+export async function updateExpenseCatalogItem(profileId: string, itemId: string, changes: { name?: string; active?: boolean }) {
+  const payload: Record<string, unknown> = { updatedAt: serverTimestamp() };
+  if (changes.name !== undefined) payload.name = changes.name.trim();
+  if (changes.active !== undefined) payload.active = changes.active;
+  await updateDoc(doc(db, "profiles", profileId, "expenseCatalogItems", itemId), payload);
+}
+
+export async function removeExpenseCatalogItem(profileId: string, itemId: string) {
+  await deleteDoc(doc(db, "profiles", profileId, "expenseCatalogItems", itemId));
+}
+
+function catalogSnapshot(item?: ExpenseCatalogItem) {
+  return item ? { id: item.id, name: item.name } : { id: undefined, name: undefined };
+}
+
+function expensePayload(input: Omit<Expense, "id" | "profileId">) {
+  return Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined));
+}
+
+export async function createExpense(profileId: string, input: Omit<Expense, "id" | "profileId">) {
+  await addDoc(collection(db, "profiles", profileId, "expenses"), {
+    ...expensePayload(input),
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
+}
+
+export async function updateExpense(profileId: string, expenseId: string, input: Omit<Expense, "id" | "profileId">) {
+  await updateDoc(doc(db, "profiles", profileId, "expenses", expenseId), {
+    ...expensePayload(input),
+    updatedAt: serverTimestamp(),
+  });
+}
+
+export async function removeExpense(profileId: string, expenseId: string) {
+  await deleteDoc(doc(db, "profiles", profileId, "expenses", expenseId));
+}
+
+export function expenseCatalogSelection(item?: ExpenseCatalogItem) {
+  return catalogSnapshot(item);
 }

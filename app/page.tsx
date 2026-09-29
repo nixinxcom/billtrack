@@ -1,5 +1,7 @@
 "use client";
 
+import Link from "next/link";
+
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import type { User } from "firebase/auth";
 import {
@@ -1087,6 +1089,10 @@ export default function Home() {
 
             <span>days</span>
           </label>
+
+          <Link className="ghost nav-link" href="/expenses">
+            Expenses
+          </Link>
 
           <button
             className="ghost"
